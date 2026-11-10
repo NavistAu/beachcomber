@@ -11,9 +11,8 @@
 //! - **Absent.** `None`, and a `null` anywhere in a value, is absent: it
 //!   prints nothing (no line, no assignment), an empty cell where a column
 //!   must hold its place, and `null` only in json.
-//! - **Text.** A scalar prints bare; a container as sorted `address=value`
-//!   lines, one per leaf at any depth, each address canonical
-//!   ([`crate::key`]) so it can be typed back as a key.
+//! - **Text.** A scalar prints bare; a container as an aligned tree (see
+//!   [`Tree`]): rows of key and value, nesting hung under its key.
 //! - **Shell.** Every line is an assignment to a name in
 //!   `[A-Za-z_][A-Za-z0-9_]*` ([`sh_name`]): a leaf is named by its address
 //!   below the key, a scalar by the key's last segment. Values are
@@ -79,7 +78,7 @@ pub fn duration_with(d: Duration, parts: usize, floor: Unit) -> String {
 /// A value format.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Format {
-    /// A scalar bare; a container as `address=value` lines.
+    /// A scalar bare; a container as an aligned tree.
     Text,
     Json,
     /// Shell assignments.
@@ -252,14 +251,17 @@ pub fn tsv_escape(cell: &str) -> String {
 /// What `comb get KEY` prints for the value it resolved: nothing for a miss
 /// but `null` under json.
 pub fn render_value(key: &str, value: Option<&Value>, format: Format) -> String {
+    render_value_in(key, value, format, &Tree::UNICODE)
+}
+
+/// [`render_value`], with a container drawn under text in `tree`'s glyphs.
+pub fn render_value_in(key: &str, value: Option<&Value>, format: Format, tree: &Tree) -> String {
     let value = present(value);
     match format {
         Format::Json => format!("{}\n", pretty(value)),
         Format::Text => match value {
             None => String::new(),
-            Some(container @ (Value::Object(_) | Value::Array(_))) => {
-                text_lines(container).concat()
-            }
+            Some(container @ (Value::Object(_) | Value::Array(_))) => text_tree(container, tree),
             Some(scalar) => csv_cell(Some(scalar)),
         },
         Format::Sh => value.map(|v| sh_lines(key, v).concat()).unwrap_or_default(),
@@ -280,6 +282,11 @@ pub fn render_value(key: &str, value: Option<&Value>, format: Format) -> String 
 /// holding its place — `null` in the json array, an empty line under text
 /// and sh, an empty cell under csv and tsv.
 pub fn render_values(slots: &[(&str, Option<&Value>)], format: Format) -> String {
+    render_values_in(slots, format, &Tree::UNICODE)
+}
+
+/// [`render_values`], with a container drawn under text in `tree`'s glyphs.
+pub fn render_values_in(slots: &[(&str, Option<&Value>)], format: Format, tree: &Tree) -> String {
     match format {
         Format::Json => {
             let values: Vec<Value> = slots
@@ -292,15 +299,15 @@ pub fn render_values(slots: &[(&str, Option<&Value>)], format: Format) -> String
             .iter()
             .map(|(key, value)| {
                 let lines = match (present(*value), format) {
-                    (None, _) => Vec::new(),
-                    (Some(v), Format::Sh) => sh_lines(key, v),
-                    (Some(c @ (Value::Object(_) | Value::Array(_))), _) => text_lines(c),
-                    (Some(scalar), _) => vec![format!("{}\n", csv_cell(Some(scalar)))],
+                    (None, _) => String::new(),
+                    (Some(v), Format::Sh) => sh_lines(key, v).concat(),
+                    (Some(c @ (Value::Object(_) | Value::Array(_))), _) => text_tree(c, tree),
+                    (Some(scalar), _) => format!("{}\n", csv_cell(Some(scalar))),
                 };
                 if lines.is_empty() {
                     "\n".to_string()
                 } else {
-                    lines.concat()
+                    lines
                 }
             })
             .collect(),
@@ -325,6 +332,11 @@ pub fn render_values(slots: &[(&str, Option<&Value>)], format: Format) -> String
 /// `get` prints for one: `null` under json, and no frame at all under every
 /// other format.
 pub fn render_frame(key: &str, value: Option<&Value>, format: Format) -> String {
+    render_frame_in(key, value, format, &Tree::UNICODE)
+}
+
+/// [`render_frame`], with a container drawn under text in `tree`'s glyphs.
+pub fn render_frame_in(key: &str, value: Option<&Value>, format: Format, tree: &Tree) -> String {
     let value = present(value);
     let mut frame = match (format, value) {
         (Format::Json, value) => format!(
@@ -332,7 +344,7 @@ pub fn render_frame(key: &str, value: Option<&Value>, format: Format) -> String 
             serde_json::to_string(value.unwrap_or(&Value::Null)).unwrap_or_default()
         ),
         (_, None) => return String::new(),
-        (other, Some(value)) => render_value(key, Some(value), other),
+        (other, Some(value)) => render_value_in(key, Some(value), other, tree),
     };
     if !frame.ends_with('\n') {
         frame.push('\n');
@@ -349,16 +361,126 @@ fn pretty(value: Option<&Value>) -> String {
     serde_json::to_string_pretty(value.unwrap_or(&Value::Null)).unwrap_or_default()
 }
 
-/// `address=value` lines for every present leaf of a container, sorted.
-fn text_lines(container: &Value) -> Vec<String> {
-    let mut leaves = Vec::new();
-    collect_leaves("", container, &mut leaves);
-    let mut lines: Vec<String> = leaves
-        .into_iter()
-        .map(|(address, leaf)| format!("{address}={}\n", csv_cell(Some(leaf))))
-        .collect();
-    lines.sort();
-    lines
+/// The glyphs a text tree is drawn with: a branch with more below it, the
+/// last branch, and the bar that continues a level (each two columns wide, but
+/// the bar).
+pub struct Tree {
+    pub branch: &'static str,
+    pub last: &'static str,
+    pub pipe: &'static str,
+}
+
+impl Tree {
+    pub const UNICODE: Tree = Tree {
+        branch: "\u{251c}\u{2500}",
+        last: "\u{2514}\u{2500}",
+        pipe: "\u{2502}",
+    };
+}
+
+/// Whether `value` holds a leaf that is present: nulls and empty containers
+/// are not printed.
+fn has_leaf(value: &Value) -> bool {
+    match value {
+        Value::Null => false,
+        Value::Object(m) => m.values().any(has_leaf),
+        Value::Array(a) => a.iter().any(has_leaf),
+        _ => true,
+    }
+}
+
+/// A container as an aligned tree: a level's leaves are rows of the key,
+/// two spaces and the value, and a nested container is its key with its own
+/// level hung under it by `tree`'s glyphs. A list is one item per line.
+fn text_tree(container: &Value, tree: &Tree) -> String {
+    let mut out = String::new();
+    let items: Vec<(Option<String>, &Value)> = match container {
+        Value::Object(m) => m.iter().map(|(k, v)| (Some(k.clone()), v)).collect(),
+        Value::Array(a) => a
+            .iter()
+            .enumerate()
+            .map(|(i, v)| {
+                (
+                    matches!(v, Value::Object(_) | Value::Array(_)).then(|| i.to_string()),
+                    v,
+                )
+            })
+            .collect(),
+        _ => Vec::new(),
+    };
+    tree_level(items, "", true, tree, &mut out);
+    out
+}
+
+fn tree_level(
+    items: Vec<(Option<String>, &Value)>,
+    prefix: &str,
+    top: bool,
+    tree: &Tree,
+    out: &mut String,
+) {
+    let items: Vec<_> = items.into_iter().filter(|(_, v)| has_leaf(v)).collect();
+    let is_container = |v: &Value| matches!(v, Value::Object(_) | Value::Array(_));
+    let width = items
+        .iter()
+        .filter(|(_, v)| !is_container(v))
+        .filter_map(|(k, _)| k.as_ref().map(|k| k.chars().count()))
+        .max()
+        .unwrap_or(0);
+    for (i, (label, value)) in items.iter().enumerate() {
+        let last = i + 1 == items.len();
+        let lead = if top {
+            String::new()
+        } else {
+            format!("{prefix}{} ", if last { tree.last } else { tree.branch })
+        };
+        let label_text = label.as_deref().unwrap_or("");
+        match value {
+            Value::Object(m) => {
+                out.push_str(&format!("{lead}{label_text}\n"));
+                let kids = m.iter().map(|(k, v)| (Some(k.clone()), v)).collect();
+                tree_level(
+                    kids,
+                    &child_prefix(prefix, top, last, tree),
+                    false,
+                    tree,
+                    out,
+                );
+            }
+            Value::Array(a) => {
+                out.push_str(&format!("{lead}{label_text}\n"));
+                let kids = a
+                    .iter()
+                    .enumerate()
+                    .map(|(i, v)| (is_container(v).then(|| i.to_string()), v))
+                    .collect();
+                tree_level(
+                    kids,
+                    &child_prefix(prefix, top, last, tree),
+                    false,
+                    tree,
+                    out,
+                );
+            }
+            leaf => {
+                let cell = csv_cell(Some(leaf));
+                match label {
+                    Some(k) => out.push_str(&format!("{lead}{k:<width$}  {cell}\n")),
+                    None => out.push_str(&format!("{lead}{cell}\n")),
+                }
+            }
+        }
+    }
+}
+
+/// The prefix of the level under a container row: nothing under the top
+/// level, else a bar (or blank, under the last) in the column of the glyph.
+fn child_prefix(prefix: &str, top: bool, last: bool, tree: &Tree) -> String {
+    match (top, last) {
+        (true, _) => String::new(),
+        (false, true) => format!("{prefix}   "),
+        (false, false) => format!("{prefix}{}  ", tree.pipe),
+    }
 }
 
 /// Assignments for `value` read under `key`: every present leaf of a
@@ -545,17 +667,60 @@ mod tests {
         }
     }
 
+    const ASCII_TREE: Tree = Tree {
+        branch: "|-",
+        last: "`-",
+        pipe: "|",
+    };
+
+    fn text(data: &Value) -> String {
+        render_value("p", Some(data), Format::Text)
+    }
+
     #[test]
-    fn a_container_is_sorted_lines_of_canonical_addresses() {
-        let data = json!({
-            "z": "last",
-            "a": {"b": [1, {"c": 2}], "n": null},
-            "d.e": 3,
-            "empty": {},
-        });
+    fn a_flat_object_is_aligned_rows() {
         assert_eq!(
-            render_value("p", Some(&data), Format::Text),
-            "['d.e']=3\na.b.0=1\na.b.1.c=2\nz=last\n"
+            text(&json!({"machine": "arm64", "os": "Darwin", "n": 3})),
+            "machine  arm64\nn        3\nos       Darwin\n"
+        );
+    }
+
+    #[test]
+    fn a_nested_object_hangs_under_its_key_in_tree_glyphs() {
+        let data = json!({"branch": "dev", "lineage": {"added": 1, "removed_all": 22, "deep": {"x": 1, "y": 2}}});
+        assert_eq!(
+            text(&data),
+            "branch  dev\nlineage\n\
+             \u{251c}\u{2500} added        1\n\
+             \u{251c}\u{2500} deep\n\
+             \u{2502}  \u{251c}\u{2500} x  1\n\
+             \u{2502}  \u{2514}\u{2500} y  2\n\
+             \u{2514}\u{2500} removed_all  22\n"
+        );
+    }
+
+    #[test]
+    fn a_list_is_one_item_per_line() {
+        let data = json!({"tags": ["a", "b"], "k": 1});
+        assert_eq!(
+            text(&data),
+            "k  1\ntags\n\u{251c}\u{2500} a\n\u{2514}\u{2500} b\n"
+        );
+        assert_eq!(text(&json!(["x", "y"])), "x\ny\n");
+    }
+
+    #[test]
+    fn nulls_and_empty_containers_are_not_printed() {
+        let data = json!({"a": 1, "n": null, "e": {}, "l": [null], "o": {"p": null}});
+        assert_eq!(text(&data), "a  1\n");
+    }
+
+    #[test]
+    fn ascii_glyphs_draw_the_same_tree() {
+        let data = json!({"a": {"b": {"c": 1}, "d": 2}});
+        assert_eq!(
+            render_value_in("p", Some(&data), Format::Text, &ASCII_TREE),
+            "a\n|- b\n|  `- c  1\n`- d  2\n"
         );
     }
 
@@ -625,7 +790,7 @@ mod tests {
         );
         assert_eq!(
             render_frame("p", Some(&json!({"a": 1})), Format::Text),
-            "a=1\n"
+            "a  1\n"
         );
     }
 

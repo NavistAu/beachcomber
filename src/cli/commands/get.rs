@@ -12,7 +12,7 @@
 use crate::cli::exit::Outcome;
 use crate::cli::output_format::{Format, render_template};
 use crate::config::Config;
-use libbeachcomber::render::{render_value, render_values};
+use libbeachcomber::render::{render_value_in, render_values_in};
 use libbeachcomber::resolve::{Slot, resolve_traced, write_back};
 use serde_json::Value;
 
@@ -57,6 +57,7 @@ pub fn run_get(
     format: Format,
     force: bool,
     wait: libbeachcomber::Wait,
+    style: crate::cli::style::Style,
 ) -> Outcome {
     // `comb` always requires the daemon (design §2), a key whose answer needs
     // no request (`env.HOME`) included.
@@ -117,11 +118,11 @@ pub fn run_get(
             Ok(match slots.as_slice() {
                 // A key that failed has no answer to print: its error is it.
                 [_] if outcome == Outcome::Error => String::new(),
-                [(key, value)] => render_value(key, value.as_ref(), format),
+                [(key, value)] => render_value_in(key, value.as_ref(), format, &style.tree()),
                 many => {
                     let slots: Vec<(&str, Option<&Value>)> =
                         many.iter().map(|(k, v)| (*k, v.as_ref())).collect();
-                    render_values(&slots, format)
+                    render_values_in(&slots, format, &style.tree())
                 }
             })
         }

@@ -34,8 +34,8 @@ cd ~/app/src/deep && comb get pkg
 ```
 
 ```
-name=my-app
-version=2.4.0
+name     my-app
+version  2.4.0
 ```
 
 ## Other formats
@@ -106,8 +106,8 @@ comb get hosts
 ```
 
 ```
-mtime=1777558367
-size=213
+mtime  1777558367
+size   213
 ```
 
 ## Missing files

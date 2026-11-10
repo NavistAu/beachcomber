@@ -18,8 +18,8 @@ comb get deploy
 ```
 
 ```
-build=412
-env=staging
+build  412
+env    staging
 ```
 
 The data is JSON. At the provider's root it must be an object; below it, any JSON value:

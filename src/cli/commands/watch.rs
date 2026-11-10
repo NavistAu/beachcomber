@@ -20,13 +20,19 @@
 use crate::cli::exit::Outcome;
 use crate::cli::output_format::{Format, render_template};
 use crate::config::Config;
-use libbeachcomber::render::render_frame;
+use libbeachcomber::render::render_frame_in;
 use libbeachcomber::resolve::Slot;
 use libbeachcomber::watch::{ResolvedWatch, WatchOutcome};
 
 /// `path` is what `main.rs` already settled: `None` for `--global`, otherwise
 /// `--path`, the trailing positional, or the current directory.
-pub fn run_watch(config: &Config, key: &str, path: Option<&str>, format: Format) -> Outcome {
+pub fn run_watch(
+    config: &Config,
+    key: &str,
+    path: Option<&str>,
+    format: Format,
+    style: crate::cli::style::Style,
+) -> Outcome {
     let socket_path = match crate::cli::connect::connect(config) {
         Ok(socket) => socket,
         Err(outcome) => return outcome,
@@ -78,12 +84,13 @@ pub fn run_watch(config: &Config, key: &str, path: Option<&str>, format: Format)
                         render_template(template, &[(key, value)], &inputs, session)
                             .map(|text| text + "\n")
                     }
-                    (Format::Preset(preset), _) => Ok(render_frame(
+                    (Format::Preset(preset), _) => Ok(render_frame_in(
                         key,
                         value.as_ref(),
                         preset
                             .value_format()
                             .expect("watch's formats are value formats"),
+                        &style.tree(),
                     )),
                     (Format::Template(_), None) => {
                         unreachable!("a template opens its session")

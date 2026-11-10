@@ -60,8 +60,8 @@ $ comb put team.channel '"#ops"' --global
 $ comb put team.name '"checkout"' --path ~/code/shop
 $ cd ~/code/shop
 $ comb get team
-channel=#ops
-name=checkout
+channel  #ops
+name     checkout
 ```
 
 ## Built-in values cascade too

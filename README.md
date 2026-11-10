@@ -106,17 +106,17 @@ detached='false'
 dirty='true'
 …                               # one line per field, sorted — 30 in all
 
-$ comb g git .                   # default: text — the same key=value lines, unquoted
-ahead=0
-behind=0
-branch=main
-branch_default=main
-branch_parent=main
-commit=36b2704
-commit_summary=init
-conflicted=0
-detached=false
-dirty=true
+$ comb g git .                   # default: text — an aligned tree, unquoted (nesting hangs under its key)
+ahead           0
+behind          0
+branch          main
+branch_default  main
+branch_parent   main
+commit          36b2704
+commit_summary  init
+conflicted      0
+detached        false
+dirty           true
 …
 
 $ comb g.j git .                 # .j = JSON: the bare value, no envelope (age is in git:cache.branch)
@@ -1844,7 +1844,7 @@ The wire protocol is JSON-only: every response is the JSON envelope with `ok`, `
 
 The `comb` CLI renders the JSON response into additional output formats on the client side (these are not part of the wire protocol):
 
-**`text`:** The bare value, no trailing newline, so it embeds in a prompt string verbatim. For a whole namespace or any object value: one `key=value` line per leaf at any depth (`a.b.c=value`, arrays by index), sorted alphabetically.
+**`text`:** The bare value, no trailing newline, so it embeds in a prompt string verbatim. For a whole namespace or any object value: an aligned tree — a level's leaves are rows of the key, two spaces and the value, a nested object or array hangs under its key with `├─`/`└─` (`|-`/`` `- `` under `--ascii`), absent values are not printed, keys sorted alphabetically. Scripts should read `-f sh` or `-f json`.
 
 **`sh`:** The same lines as `text` with every value POSIX-single-quoted (`branch='main'`), so the output is safe to `eval`; keys stay bare dotted names.
 

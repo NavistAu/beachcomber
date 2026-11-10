@@ -447,6 +447,7 @@ fn run(cli: Cli) -> Outcome {
                 format,
                 force,
                 wait.unwrap_or_default(),
+                style,
             )
         }
         Commands::Status {
@@ -512,7 +513,7 @@ fn run(cli: Cli) -> Outcome {
                 Ok(p) => p,
                 Err(code) => return code,
             };
-            run_watch(&config, &key, effective_path.as_deref(), format)
+            run_watch(&config, &key, effective_path.as_deref(), format, style)
         }
         Commands::Eval {
             template,
@@ -526,7 +527,13 @@ fn run(cli: Cli) -> Outcome {
                 Ok(p) => p,
                 Err(code) => return code,
             };
-            beachcomber::cli::commands::eval::run_eval(&config, &template, path.as_deref(), format)
+            beachcomber::cli::commands::eval::run_eval(
+                &config,
+                &template,
+                path.as_deref(),
+                format,
+                style,
+            )
         }
         Commands::Init => run_init(),
         Commands::Check {

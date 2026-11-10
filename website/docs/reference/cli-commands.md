@@ -102,7 +102,7 @@ A key is jinja's own address syntax, so a key reads the same here as in a templa
 | `[n]` | `p.list[0]`, `p.list[-1]` | An array index; the same as `p.list.0`. A negative index counts from the end, as in jinja |
 | `['…']` / `["…"]` | `'mise["go:golang.org/x/tools/gopls"]'` | A quoted segment, for a name holding `.`, `[` or `]`; a backslash escapes only the quote and the backslash |
 
-Brackets are the one quoting form; quote the whole key for the shell (`comb g 'p["a.b"]'`). Every address comb prints — `comb g` text lines, the `comb s` FIELD column, error messages — is in canonical form and can be typed back as a key: a segment that needs quoting prints as `['…']`, as in `['go:golang.org/x/tools/gopls']=0.16.0`.
+Brackets are the one quoting form; quote the whole key for the shell (`comb g 'p["a.b"]'`). Every address comb prints — the `comb s` FIELD column, `-f sh` names, error messages — is in canonical form and can be typed back as a key: a segment that needs quoting prints as `['…']`, as in `['go:golang.org/x/tools/gopls']`; `comb g` text prints a name as it is.
 
 The `provider.field` form automatically routes to the source that owns the field — a source name is metadata on the record, never a key you address directly. Unlike a field, a source has no address at all.
 
@@ -118,7 +118,7 @@ comb g battery.percent           # → 87
 comb g hostname.short            # → myhost
 
 # Query the entire provider (all fields from all sources) — alternate formats
-comb g git .                     # → key=value lines, one per leaf at any depth (text default)
+comb g git .                     # → an aligned tree: rows of key and value, nesting under its key (text default)
 comb g.j git .                   # → the bare JSON object, nested (no envelope — metadata is in the :cache facet)
 comb g.s git .                   # → a shell assignment per leaf, every value shell-quoted
 comb g.c git .                   # → one comma-separated row, a cell per field
@@ -164,7 +164,7 @@ comb g.j git:source .            # → what the Source computed, even where a pu
 
 **Output.** Every format is rendered once, for `get`, `watch` and `eval` alike:
 - **Absent.** A miss, or a `null` anywhere in a value, prints nothing — no line, no assignment — an empty cell where a column holds its place, and `null` only in json.
-- **text.** A scalar prints bare. A container prints sorted `address=value` lines, one per leaf at any depth, each address canonical so it can be typed back as a key (`['a.b']=1`, `list.0=a`).
+- **text.** A scalar prints bare. A container prints as an aligned tree: a level's leaves are rows of the key, two spaces and the value (the key padded to the widest leaf key at that level), and a nested object or array hangs under its key with `├─`, `└─` and `│` (`|-`, `` `- `` and `|` under `--ascii`, as `comb s --tree` draws them). A list is one item per line. Keys print as they are, unquoted and not typed back as addresses, strings unquoted; the rows carry nothing after the value, so `cut` splits them. Scripts read `-f sh` or `-f json`. A key sorts alphabetically within its level.
 - **sh.** Every line assigns a shell variable: a leaf is named by its address below the key with each character outside `[A-Za-z0-9_]` written as `_` (`c.d` → `c_d`, `['a.b']` → `a_b`, `e f` → `e_f`), a scalar by the key's last segment, and every value is single-quoted, so `eval "$(comb g.s …)"` is safe.
 - **csv and tsv.** A cell per top-level field of an object, or per key; a string is its raw text and anything else its JSON text. csv quotes per RFC 4180, tsv writes `\`, tab, CR and LF as `\\`, `\t`, `\r` and `\n`, and `CSV`/`TSV` add a header row of the cells' names.
 - **Newlines.** A scalar printed under text has no trailing newline, so it embeds verbatim. Everything else — json, sh, csv, tsv, and text of a container or of several keys — ends each line in one.
@@ -479,7 +479,7 @@ Available filters: minijinja's built-ins (`default`, `upper`, `lower`, `length`,
 The natural type a typed expression keeps is mostly *not* visible
 in `comb e`'s own output, which is text: a bool prints `true`, and so does the
 string `"true"`. Where it does show is in the shapes text cannot flatten — an
-object prints as sorted `key=value` lines and an array as JSON — and in every
+object prints as an aligned tree and an array as one item per line — and in every
 programmatic consumer: `bc_eval`, and so every SDK's `eval`, hands back a typed
 value (bool, number, object, array). A template is always a string in all of
 them.

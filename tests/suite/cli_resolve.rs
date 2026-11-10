@@ -152,8 +152,8 @@ fn an_address_past_a_template_indexes_a_rendered_array() {
     );
 
     assert_eq!(stdout(&d, &cwd, &["scanline.list.0"]), "a");
-    // The array itself flattens by decimal index under `text`.
-    assert_eq!(stdout(&d, &cwd, &["scanline.list"]), "0=a\n1=b\n");
+    // The array itself is one item per line under `text`.
+    assert_eq!(stdout(&d, &cwd, &["scanline.list"]), "a\nb\n");
 }
 
 // ── outcome 4: a template at a cached field's path wins on read ──────────────
@@ -209,19 +209,35 @@ fn a_literal_comb_field_beside_a_lazy_comb_still_demands_only_its_own_source() {
 // ── outcome 8: text and sh flatten at any depth ──────────────────────────────
 
 #[test]
-fn text_flattens_every_level_to_sorted_leaf_lines() {
+fn text_draws_every_level_as_a_tree() {
     let d = TestDaemon::serve();
     let cwd = project(&d);
     seed_scanline(&d, &cwd);
 
     let bar = short_host(&d, &cwd);
-    // Three levels deep, one line per leaf, sorted (spec outcome 8: before,
-    // `widgets.clock={"format":"%H:%M"}`).
+    // Three levels deep: aligned rows, nesting hung under its key.
     assert_eq!(
         stdout(&d, &cwd, &["scanline", "-f", "text"]),
         format!(
-            "lit=1\ntheme=dark\nwidgets.bar={bar}\nwidgets.clock.format=%H:%M\nwidgets.foo=hi\n"
+            "lit    1\ntheme  dark\nwidgets\n\u{251c}\u{2500} bar  {bar}\n\u{251c}\u{2500} clock\n\u{2502}  \u{2514}\u{2500} format  %H:%M\n\u{2514}\u{2500} foo  hi\n"
         )
+    );
+}
+
+#[test]
+fn text_tree_under_ascii_uses_ascii_glyphs() {
+    let d = TestDaemon::serve();
+    let cwd = project(&d);
+    seed_scanline(&d, &cwd);
+
+    let bar = short_host(&d, &cwd);
+    let out = comb(&d, &cwd)
+        .args(["--ascii", "get", "scanline.widgets", "-f", "text"])
+        .assert()
+        .success();
+    assert_eq!(
+        String::from_utf8(out.get_output().stdout.clone()).unwrap(),
+        format!("bar  {bar}\nclock\n`- format  %H:%M\nfoo  hi\n")
     );
 }
 

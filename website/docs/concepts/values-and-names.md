@@ -25,13 +25,13 @@ main
 $ comb get team.links.chat
 #ops
 $ comb get battery
-charging=false
-percent=80
-status=unknown
+charging  false
+percent   80
+status    unknown
 ```
 
-A single value prints as itself. Anything with values inside prints one `path=value` line each; add `-f json` to get
-it as JSON instead:
+A single value prints as itself. Anything with values inside prints as aligned `name  value` rows, a nested value as a tree
+under its name; add `-f json` to get it as JSON, or `-f sh` for shell assignments:
 
 ```shell-session
 $ comb get team -f json

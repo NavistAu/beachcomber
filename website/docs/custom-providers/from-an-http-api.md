@@ -24,8 +24,8 @@ comb get status
 ```
 
 ```
-description=All Systems Operational
-indicator=none
+description  All Systems Operational
+indicator    none
 ```
 
 `_.url()` returns the response body as text; `| fromjson` parses it. `result.<field>` lines pick fields out of the parsed
@@ -44,10 +44,10 @@ comb get gh_rate
 ```
 
 ```
-limit=60
-remaining=58
-reset=1793898342
-used=2
+limit      60
+remaining  58
+reset      1793898342
+used       2
 ```
 
 For a body that is not JSON, leave out `fromjson` and use the text: `result.body = "{{ data | trim }}"`.

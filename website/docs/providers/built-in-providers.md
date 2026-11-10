@@ -163,35 +163,35 @@ backstop.
 
 ```shell-session
 $ comb g git
-ahead=1
-behind=0
-branch=feature/login
-branch_default=main
-branch_parent=main
-commit=21520f4
-commit_summary=Fix login redirect
-conflicted=0
-detached=false
-dirty=true
-last_commit_age_secs=5
-last_commit_timestamp=1793740680
-lines_added=1
-lines_added_default=2
-lines_added_parent=2
-lines_removed=0
-lines_removed_default=0
-lines_removed_parent=0
-lines_staged_added=1
-lines_staged_removed=0
-push_ahead=1
-push_behind=0
-staged=1
-stash=1
-state=clean
-tag=v0.1.0
-unstaged=1
-untracked=1
-upstream=origin/feature/login
+ahead                  1
+behind                 0
+branch                 feature/login
+branch_default         main
+branch_parent          main
+commit                 21520f4
+commit_summary         Fix login redirect
+conflicted             0
+detached               false
+dirty                  true
+last_commit_age_secs   5
+last_commit_timestamp  1793740680
+lines_added            1
+lines_added_default    2
+lines_added_parent     2
+lines_removed          0
+lines_removed_default  0
+lines_removed_parent   0
+lines_staged_added     1
+lines_staged_removed   0
+push_ahead             1
+push_behind            0
+staged                 1
+stash                  1
+state                  clean
+tag                    v0.1.0
+unstaged               1
+untracked              1
+upstream               origin/feature/login
 ```
 
 **Branch and commit**
@@ -368,11 +368,11 @@ The AWS profile and region in effect in your shell.
 
 ```shell-session
 $ comb g aws
-profile=default
-region=us-east-1
+profile  default
+region   us-east-1
 $ AWS_PROFILE=work-prod comb g aws
-profile=work-prod
-region=eu-west-1
+profile  work-prod
+region   eu-west-1
 ```
 
 ### aws_profiles

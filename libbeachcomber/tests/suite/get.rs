@@ -90,8 +90,8 @@ fn text_is_render_value_of_get() {
     let value = client.get("get_obj", None).unwrap();
     assert_eq!(
         render_value("get_obj", value.as_ref(), Format::Text),
-        "a=it's $HOME\nz=last\n",
-        "an object renders as sorted key=value lines"
+        "a  it's $HOME\nz  last\n",
+        "an object renders as aligned rows"
     );
     assert_eq!(
         render_value("get_obj", value.as_ref(), Format::Sh),

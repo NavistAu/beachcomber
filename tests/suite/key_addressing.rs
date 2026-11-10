@@ -133,8 +133,8 @@ mod grammar {
         assert_eq!(get(&d, &cwd, &["p.o['c.d']"]), "2");
         assert_eq!(
             get(&d, &cwd, &["p"]),
-            "['a.b']=1\no['c.d']=2\n",
-            "printed as keys it can be read back by"
+            "a.b  1\no\n\u{2514}\u{2500} c.d  2\n",
+            "text prints a name as it is, unquoted"
         );
 
         put(&d, &cwd, "p['a.b']", "null");
@@ -166,7 +166,7 @@ result."c.d" = "{{ data }}"
 
         assert_eq!(get(&d, &cwd, &["t['a.b']"]), "tpl");
         assert_eq!(get(&d, &cwd, &["s['c.d']"]), "src");
-        assert_eq!(get(&d, &cwd, &["s"]), "['c.d']=src\n");
+        assert_eq!(get(&d, &cwd, &["s"]), "c.d  src\n");
     }
 
     /// A daemon whose `PATH` leads with a fake `mise` that reports two tools
@@ -208,18 +208,19 @@ result."c.d" = "{{ data }}"
     }
 
     #[test]
-    fn every_address_comb_prints_can_be_typed_back() {
+    fn every_address_status_prints_can_be_typed_back() {
         let (d, cwd) = mise_daemon();
 
         let text = get(&d, &cwd, &["mise"]);
         assert!(
-            text.lines().any(|l| l == "cargo:x=1.0"),
-            "a colon needs no quoting: {text}"
+            text.lines()
+                .any(|l| l.starts_with("cargo:x  ") && l.ends_with("1.0")),
+            "text prints a name as it is: {text}"
         );
         assert!(
             text.lines()
-                .any(|l| l == "['go:golang.org/x/tools/gopls']=0.16.0"),
-            "a name holding a dot prints quoted: {text}"
+                .any(|l| l.starts_with("go:golang.org/x/tools/gopls  ") && l.ends_with("0.16.0")),
+            "a name holding a dot prints unquoted under text: {text}"
         );
 
         let out = d

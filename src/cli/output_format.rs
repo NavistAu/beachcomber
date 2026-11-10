@@ -14,7 +14,7 @@ use libbeachcomber::render::Format as ValueFormat;
 /// A named output format.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Preset {
-    /// A value as bare text, an object as sorted `address=value` lines.
+    /// A value as bare text, an object as an aligned tree.
     Text,
     /// Rows as a coloured, aligned table.
     Human,

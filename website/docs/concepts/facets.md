@@ -22,9 +22,9 @@ one value in it:
 
 ```shell-session
 $ comb get team:put
-name=checkout
+name  checkout
 $ comb get prompt:template
-where={{ git.branch ~ ' · ' if git.branch }}{{ team.name }}
+where  {{ git.branch ~ ' · ' if git.branch }}{{ team.name }}
 $ comb get git:source.branch
 main
 ```
@@ -35,9 +35,10 @@ main
 
 ```shell-session
 $ comb get git:cache.branch
-age_ms=26326
-source=source(head)
-watch.0=.git/HEAD
+age_ms  26326
+source  source(head)
+watch
+└─ .git/HEAD
 …
 ```
 

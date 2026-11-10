@@ -24,7 +24,13 @@ use libbeachcomber::resolve::{Slot, eval};
 /// `--path`, the trailing positional, or the current directory. A render's
 /// `_.exec()`, `_.lup()` and `read` run in the directory it addresses, `$HOME` for
 /// the global entry — the resolver's rule, the same for every surface.
-pub fn run_eval(config: &Config, template: &str, path: Option<&str>, format: Format) -> Outcome {
+pub fn run_eval(
+    config: &Config,
+    template: &str,
+    path: Option<&str>,
+    format: Format,
+    style: crate::cli::style::Style,
+) -> Outcome {
     // `comb` always requires the daemon (design §2, outcome 22).
     let socket_path = match crate::cli::connect::connect(config) {
         Ok(socket) => socket,
@@ -50,13 +56,14 @@ pub fn run_eval(config: &Config, template: &str, path: Option<&str>, format: For
         Ok(value) => {
             print!(
                 "{}",
-                libbeachcomber::render::render_value(
+                libbeachcomber::render::render_value_in(
                     "",
                     value.as_ref(),
                     format
                         .preset()
                         .and_then(|p| p.value_format())
-                        .expect("eval's formats are value formats")
+                        .expect("eval's formats are value formats"),
+                    &style.tree()
                 )
             );
             if value.is_some() {

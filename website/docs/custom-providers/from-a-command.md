@@ -45,8 +45,8 @@ comb get docker_ctx
 ```
 
 ```
-context=default
-remote=false
+context  default
+remote   false
 ```
 
 ```sh
@@ -101,7 +101,7 @@ comb get greeting.text
 ```
 
 ```
-hello=world lang=en
+hello  world lang=en
 ```
 
 ## Running the command

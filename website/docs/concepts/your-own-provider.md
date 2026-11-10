@@ -47,8 +47,8 @@ repository.
 ```shell-session
 $ cd ~/code/shop/web
 $ comb get pkg
-name=shop
-version=1.4.0
+name     shop
+version  1.4.0
 ```
 
 Edit the version in `package.json` and read it again: you get the new one. The daemon notices when a file a source
@@ -70,8 +70,8 @@ works across them: a value the inner package doesn't have falls up to the outer 
 ```shell-session
 $ cd ~/code/mono/packages/ui
 $ comb get pkg
-name=ui
-version=2.0.0
+name     ui
+version  2.0.0
 ```
 
 `ui` has no version, so `pkg.version` came from `mono`. Sometimes that's what you want. When it isn't, add `nearest`
@@ -83,7 +83,7 @@ return = "{{ result | watch('package.json') | nearest }}"
 
 ```shell-session
 $ comb get pkg
-name=ui
+name  ui
 ```
 
 git's sources all use `nearest`, so a repository inside another one never shows the outer repository's branch.

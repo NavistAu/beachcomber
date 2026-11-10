@@ -60,6 +60,8 @@ pub struct Glyphs {
     /// A tree branch with more below it, and the last one.
     pub branch: &'static str,
     pub last_branch: &'static str,
+    /// The bar that carries a tree down past a branch with more below it.
+    pub pipe: &'static str,
     pub ellipsis: &'static str,
     /// The dash of a sentence, and of a cell with nothing in it.
     pub dash: &'static str,
@@ -74,6 +76,7 @@ pub const UNICODE: Glyphs = Glyphs {
     tainted: "\u{203c}",
     branch: "\u{251c}\u{2500}",
     last_branch: "\u{2514}\u{2500}",
+    pipe: "\u{2502}",
     ellipsis: "\u{2026}",
     dash: "\u{2014}",
 };
@@ -87,6 +90,7 @@ pub const ASCII: Glyphs = Glyphs {
     tainted: "!!",
     branch: "|-",
     last_branch: "`-",
+    pipe: "|",
     ellipsis: "...",
     dash: "-",
 };
@@ -133,6 +137,16 @@ impl Style {
             std::io::stdout().is_terminal(),
             ascii,
         )
+    }
+
+    /// The glyphs a `text` tree is drawn with.
+    pub fn tree(self) -> libbeachcomber::render::Tree {
+        let g = self.glyphs();
+        libbeachcomber::render::Tree {
+            branch: g.branch,
+            last: g.last_branch,
+            pipe: g.pipe,
+        }
     }
 
     pub fn glyphs(self) -> &'static Glyphs {

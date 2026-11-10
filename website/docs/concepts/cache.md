@@ -179,8 +179,8 @@ A template this long reads better over several lines. A TOML string in `'''` can
 
 ```shell-session
 $ comb get time:cache.once
-age_ms=11320
-source=memo
+age_ms  11320
+source  memo
 …
 ```
 

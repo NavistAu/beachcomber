@@ -26,12 +26,12 @@ key can take a moment; later reads come from the cache.
 
 ### A whole namespace
 
-Leave off the field to read every field in the namespace, one `field=value` line each:
+Leave off the field to read every field in the namespace, one aligned `field  value` row each:
 
 ```shell-session
 $ comb g hostname
-name=laptop.local
-short=laptop
+name   laptop.local
+short  laptop
 ```
 
 Several keys in one call print one line each, in order:
@@ -84,8 +84,8 @@ $ comb g.j git.ahead git.branch hostname.short
   "laptop"
 ]
 $ comb g.s git.branch git.dirty
-branch='feature/login'
-dirty='true'
+branch  'feature/login'
+dirty   'true'
 ```
 
 `json` keeps types (a number stays a number) and prints `null` for a miss. `sh` writes quoted assignments you can
@@ -189,8 +189,8 @@ It prints nothing on success.
 ```shell-session
 $ comb p deploy '{"status":"passing","build":412}'
 $ comb g deploy
-build=412
-status=passing
+build   412
+status  passing
 ```
 
 A put applies to its directory and every directory below it, and `--global` stores one value for everywhere:
@@ -206,8 +206,8 @@ A put replaces what it addresses. Put a field to change only that field; put the
 ```shell-session
 $ comb p deploy.status '"failing"'
 $ comb g deploy
-build=412
-status=failing
+build   412
+status  failing
 ```
 
 `null` removes a value:

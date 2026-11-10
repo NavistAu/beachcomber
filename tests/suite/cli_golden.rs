@@ -116,13 +116,14 @@ fn get_text_finds_put_created_virtual_without_explicit_path() {
         .success()
         .stdout(predicates::str::contains("42"));
 
-    // Whole provider: sorted `key=value` lines, nested objects flattened.
+    // Whole provider: aligned rows, a nested object as a tree under its key.
     d.comb(Path::new("/"))
         .args(["get", "textvirt"])
         .assert()
         .success()
-        .stdout(predicates::str::contains("context.pct=42"))
-        .stdout(predicates::str::contains(r#"stdin={"session_id":"abc"}"#));
+        .stdout(predicates::str::diff(
+            "context\n\u{2514}\u{2500} pct  42\nstdin  {\"session_id\":\"abc\"}\n",
+        ));
 }
 
 // ── get_sh_finds_put_created_virtual_without_explicit_path ───────────────────
@@ -310,7 +311,7 @@ fn eval_single_tag_object_prints_like_get_text() {
         .success();
 
     // An object keeps its type through the single-tag form and prints through
-    // `render_value` — sorted `key=value` lines, exactly what `comb get -f text`
+    // `render_value` — aligned rows, exactly what `comb get -f text`
     // gives for the same key. Before Task 3 this was minijinja's map
     // formatting (`{"a": 1, "b": "two"}`).
     let expected = d
@@ -319,13 +320,13 @@ fn eval_single_tag_object_prints_like_get_text() {
         .output()
         .unwrap();
     let expected = String::from_utf8(expected.stdout).unwrap();
-    assert_eq!(expected, "a=1\nb=two\n");
+    assert_eq!(expected, "a  1\nb  two\n");
 
     d.comb(Path::new("/"))
         .args(["eval", "{{ evalobj.o }}", "/"])
         .assert()
         .success()
-        .stdout(predicates::str::diff("a=1\nb=two\n"));
+        .stdout(predicates::str::diff("a  1\nb  two\n"));
 }
 
 #[test]

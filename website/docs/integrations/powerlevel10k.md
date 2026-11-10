@@ -166,15 +166,15 @@ typeset -g POWERLEVEL9K_COMB_GIT_LOADING_VISUAL_IDENTIFIER_COLOR=244
 function prompt_comb_git() {
   local cwd=${(%):-%/}
   local output
-  output=$(comb g git "$cwd" 2>/dev/null) || return
+  output=$(comb g.s git "$cwd" 2>/dev/null) || return
   [[ -z "$output" ]] && return
 
-  # Parse key=value lines into an associative array
+  # Parse the key='value' lines of -f sh into an associative array
   local -A g
   local line
   for line in ${(f)output}; do
     local key=${line%%=*}
-    local val=${line#*=}
+    local val=${(Q)${line#*=}}
     g[$key]=$val
   done
 
