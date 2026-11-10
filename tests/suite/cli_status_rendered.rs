@@ -286,7 +286,7 @@ fn a_leaf_that_fails_shows_its_error_text_as_the_value() {
     put(
         &d,
         &cwd,
-        &["boom:template.leaf", r#""{{ exec(['false']) }}""#],
+        &["boom:template.leaf", r#""{{ _.exec(['false']) }}""#],
     );
 
     let rows = json_rows(&d, &cwd, &["--filter", "provider=boom"]);
@@ -309,7 +309,7 @@ fn a_string_form_leaf_that_fails_names_the_script() {
     put(
         &d,
         &cwd,
-        &["boom:template.leaf", r#""{{ exec('exit 3') }}""#],
+        &["boom:template.leaf", r#""{{ _.exec('exit 3') }}""#],
     );
 
     let rows = json_rows(&d, &cwd, &["--filter", "provider=boom"]);
@@ -586,7 +586,7 @@ fn tree_keeps_the_instance_that_answered_as_the_row() {
         xdg.join("beachcomber").join("config.toml"),
         r#"
 [daemon.providers.walk.sources.main]
-root = "{{ lup('.mk') | dirname }}"
+root = "{{ _.lup('.mk') | dirname }}"
 data = "{{ '.mk' | read | trim }}"
 result.v = "{{ data }}"
 "#,

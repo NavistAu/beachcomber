@@ -6,8 +6,8 @@ title: Shared-library plugins
 # A provider from a shared-library plugin
 
 A **plugin** is a shared library (`.dylib` on macOS, `.so` on Linux) whose functions a Source's `data` line calls with
-`plugin(name, symbol, args...)`. The call runs inside the daemon, with no process started, so it suits work that runs
-often and costs too much as an `exec()`: compiled parsing, a vendor SDK, a local socket protocol. A plugin is only a
+`_.plugin(name, symbol, args...)`. The call runs inside the daemon, with no process started, so it suits work that runs
+often and costs too much as an `_.exec()`: compiled parsing, a vendor SDK, a local socket protocol. A plugin is only a
 function; the Source around it still declares the fields, the schedule and the root.
 
 ## Write one
@@ -18,7 +18,7 @@ Every symbol has the same C signature: it takes the call's arguments as a JSON a
 // hello.c
 #include <stdio.h>
 
-/* plugin('hello', 'greet', 'world')  ->  {"greeting": "hello, world"} */
+/* _.plugin('hello', 'greet', 'world')  ->  {"greeting": "hello, world"} */
 static char out[256];
 
 const char *greet(const char *input) {
@@ -43,7 +43,7 @@ cc -shared -fPIC -o ~/.config/beachcomber/plugins/libhello.so hello.c       # Li
 ```toml
 # ~/.config/beachcomber/conf.d/hello.toml
 [daemon.providers.hello.sources.main]
-data = "{{ plugin('hello', 'greet', 'world') }}"
+data = "{{ _.plugin('hello', 'greet', 'world') }}"
 result = "{{ data }}"
 return = "{{ result | poll('1h') }}"
 ```
@@ -66,7 +66,7 @@ As with any Source, a failed run keeps the last good value.
 
 ## Where libraries are found
 
-`plugin('hello', ...)` looks for `libhello.dylib` or `libhello.so` in each directory of `[daemon.plugin] path`, in
+`_.plugin('hello', ...)` looks for `libhello.dylib` or `libhello.so` in each directory of `[daemon.plugin] path`, in
 order. A name containing `/` is a path to the library itself (absolute, or starting `~/`).
 
 ```toml
@@ -97,7 +97,7 @@ and your own Sources can call them too:
 
 ```toml
 [daemon.providers.box.sources.load]
-data = "{{ plugin('sys', 'loadavg') }}"
+data = "{{ _.plugin('sys', 'loadavg') }}"
 result.one = "{{ data.one }}"
 return = "{{ result | poll('10s') }}"
 ```

@@ -13,14 +13,14 @@ data = '''{% set dir = env.CLOUDSDK_CONFIG or '~/.config/gcloud' %}
 {% set configs = namespace(found={}) %}
 {% for properties in (dir ~ '/configurations/config_*/properties') | glob %}
   {% set core = ((properties | read | fromini) or {}).core or {} %}
-  {% set configs.found = merge(configs.found, {(properties | dirname | basename)[7:]: {'project': core.project or none, 'account': core.account or none}}) %}
+  {% set configs.found = _.merge(configs.found, {(properties | dirname | basename)[7:]: {'project': core.project or none, 'account': core.account or none}}) %}
 {% endfor %}
 {{ {'active_config': (dir ~ '/active_config') | read, 'configs': configs.found} }}'''
 # `active_config`, and one `{project, account}` per configuration keyed by its name; a configuration
 # with neither is left out.
 result = '''{% set out = namespace(found={'active_config': ((data.active_config | trim) if data.active_config) or none}) %}
 {% for name, config in data.configs | items %}
-  {% if name and config %}{% set out.found = merge(out.found, {name: config}) %}{% endif %}
+  {% if name and config %}{% set out.found = _.merge(out.found, {name: config}) %}{% endif %}
 {% endfor %}
 {{ out.found }}'''
 # Polled every minute; a read checks the files the data line read. A failure is retried every 30 s.

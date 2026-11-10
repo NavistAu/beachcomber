@@ -26,11 +26,11 @@ fn a_config_at_the_current_schema_is_nothing_to_do() {
     let home = tempfile::tempdir().unwrap();
     let dir = home.path().join("beachcomber");
     std::fs::create_dir(&dir).unwrap();
-    let text = "# mine\n[daemon]\nlog_level = \"debug\"\n";
+    let text = "schema.version = 2\n# mine\n[daemon]\nlog_level = \"debug\"\n";
     std::fs::write(dir.join("config.toml"), text).unwrap();
     let (code, out, err) = migrate(home.path(), &[]);
     assert_eq!((code, err.as_str()), (0, ""), "{out}");
-    assert_eq!(out, "nothing to migrate: config is at schema 1\n");
+    assert_eq!(out, "nothing to migrate: config is at schema 2\n");
     assert_eq!(
         std::fs::read_to_string(dir.join("config.toml")).unwrap(),
         text

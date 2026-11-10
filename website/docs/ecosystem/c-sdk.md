@@ -144,7 +144,7 @@ so a binding can tell the cases apart without string matching:
 
 | Function | Description |
 |---|---|
-| `BcClient *bc_client_new(const char *options_json)` | Create a client handle. `options_json` is nullable; its keys, each optional, are `socket_path`, `timeout_ms` (default 250, at least 1: how long one read or write may take), `connect_timeout_ms` (default 1500, 0 is one attempt: how long connecting keeps retrying), `autostart` (default on) and `exec` (`{"exec":true}` lets templates this client renders call `exec()`; off by default). Any other key is refused, as `parse_error` on the handle's first op. Never returns NULL. |
+| `BcClient *bc_client_new(const char *options_json)` | Create a client handle. `options_json` is nullable; its keys, each optional, are `socket_path`, `timeout_ms` (default 250, at least 1: how long one read or write may take), `connect_timeout_ms` (default 1500, 0 is one attempt: how long connecting keeps retrying), `autostart` (default on) and `exec` (`{"exec":true}` lets templates this client renders call `_.exec()`; off by default). Any other key is refused, as `parse_error` on the handle's first op. Never returns NULL. |
 | `void bc_client_free(BcClient *client)` | Free a client handle. Null-safe. |
 
 ### Operations
@@ -175,11 +175,11 @@ The unrendered halves are facets, read with `bc_get` like any key:
 `p:template.x` is the template as stored, `p:put.x` and `p:source.x` those
 layers' values. There is no raw read.
 
-`exec()` inside a template runs only on a client created with
+`_.exec()` inside a template runs only on a client created with
 `bc_client_new("{\"exec\":true}")`; it is off by default, and a template
 that calls it then fails with `exec() is disabled in this context`. A
 template that does not compile, or cycles, is `kind: "parse_error"`; a
-runtime failure (a failed or disabled `exec()`) is `kind: "server_error"`.
+runtime failure (a failed or disabled `_.exec()`) is `kind: "server_error"`.
 
 ### Sessions
 

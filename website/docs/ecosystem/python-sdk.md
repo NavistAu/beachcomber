@@ -110,7 +110,7 @@ This mirrors the daemon's bind path; no session-scoped environment (`$TMPDIR`, `
 ```python
 client = Client()
 client = Client(socket_path="/custom/path")
-client = Client(exec=True)   # templates this client renders may call exec(); off by default
+client = Client(exec=True)   # templates this client renders may call _.exec(); off by default
 client = Client(timeout_ms=500, connect_timeout_ms=0)
 ```
 
@@ -120,14 +120,14 @@ client = Client(timeout_ms=500, connect_timeout_ms=0)
 | `timeout_ms` | 250 | How long one read or write on the socket may take; at least 1. |
 | `connect_timeout_ms` | 1500 | How long connecting keeps retrying before it gives up; 0 is one attempt. |
 | `autostart` | on | Start a daemon when none answers an auto-discovered socket. |
-| `exec` | off | Whether a template this client renders may call `exec()`. |
+| `exec` | off | Whether a template this client renders may call `_.exec()`. |
 
 The defaults are the library's (`bc_client_new`): this SDK passes on the
 options you give and adds none of its own.
 
 #### `client.get(key, cwd=None, env=None, force=False, wait=None)` / `client.eval(template_str, cwd=None, env=None)`
 
-`get` returns the value `comb get` prints for this key, cwd and env — the bare value, `None` on a miss: the daemon holds the templates (`<provider>:template`, seeded from configuration or `put`) and the client renders them. A plain field is its cached value, a templated one (`kubecontext.context`, `python.version`) is rendered, and a bare provider name is the whole merged namespace. `cwd=None` is the global entry; `force` re-executes every Source the read demands first, and `wait` is how long to wait for a run the read needs before answering what is stored, as `comb get --wait`: a duration (`"0"`, `"50ms"`, `"2s"`) or `"forever"`, anything else a `ParseError`. The unrendered halves are facets, read like any key: `p:template.x` is the template as stored, `p:put.x` and `p:source.x` those layers' values. `eval` renders a template that is stored nowhere — the same value `comb eval` prints. The template accepts a single `{{ expr }}` tag, or literal text/several tags — the former keeps the expression's natural type, the latter is always a string (a source with no tags at all is its literal text). `exec()` inside a template runs only on a `Client(exec=True)`; otherwise it fails with `exec() is disabled in this context`.
+`get` returns the value `comb get` prints for this key, cwd and env — the bare value, `None` on a miss: the daemon holds the templates (`<provider>:template`, seeded from configuration or `put`) and the client renders them. A plain field is its cached value, a templated one (`kubecontext.context`, `python.version`) is rendered, and a bare provider name is the whole merged namespace. `cwd=None` is the global entry; `force` re-executes every Source the read demands first, and `wait` is how long to wait for a run the read needs before answering what is stored, as `comb get --wait`: a duration (`"0"`, `"50ms"`, `"2s"`) or `"forever"`, anything else a `ParseError`. The unrendered halves are facets, read like any key: `p:template.x` is the template as stored, `p:put.x` and `p:source.x` those layers' values. `eval` renders a template that is stored nowhere — the same value `comb eval` prints. The template accepts a single `{{ expr }}` tag, or literal text/several tags — the former keeps the expression's natural type, the latter is always a string (a source with no tags at all is its literal text). `_.exec()` inside a template runs only on a `Client(exec=True)`; otherwise it fails with `exec() is disabled in this context`.
 
 #### `client.refresh(key, path=None)`
 

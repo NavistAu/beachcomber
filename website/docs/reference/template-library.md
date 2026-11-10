@@ -9,9 +9,23 @@ The filters and functions a template can call. Templates are jinja (minijinja), 
 `comb eval`, a `status` row, an SDK `get`/`eval`, and a Source's lines. minijinja's builtins (`default`, `join`,
 `select`, `round`, `format`, ...) are there as well; this page is the library comb adds.
 
+## Functions are called through `_`; a bare name is a provider
+
+Every function on this page is called through `_`: `_.lup('.git')`, `_.now()`, `_.exec('ls')`,
+`_.log.warn('no agent')`, `_.fail('gone')`. A bare name in a template is always a provider (or a namespace a `put`
+made), so a provider named like a function reads as itself: `{{ now.x }}` reads a provider `now`, and no function comb
+adds later can take a name over. Filters have names of their own and stay bare: `'ls' | exec()`, `a | merge(b)`.
+minijinja's own functions (`range`, `dict`, `namespace`, `debug`) stay bare too.
+
+A call by the bare name (`lup('.git')`) is an error that names the new spelling: `lup() is now _.lup()`. Config
+files and stored template puts written before 0.11.0 are rewritten for you: see
+[`comb migrate`](./cli-commands.md#comb-migrate). A template inside your own code (an SDK `get` or `eval`) is yours
+to edit.
+
 ## Rules for every item
 
-- **One name, one form.** An item is a filter or a function, with no alias. `merge`, `exec` and `execa` keep both forms.
+- **One name, one form.** An item is a filter or a function, with no alias. `merge`, `exec` and `execa` keep both
+  forms: the function through `_`, the filter bare.
 - **Absent in, absent out.** Given `none` or undefined, every filter returns *undefined*. `| default(x)` then fires
   without a second argument, and `~` joins it as nothing. This covers minijinja's builtins too (`none | upper`,
   `missing | length`). The exceptions exist to handle absence or to render it: `default`/`d`, `bool`, `tojson`,
@@ -33,7 +47,7 @@ Each item has a tier, and the tier says where it is available.
 | io | files | yes | yes | no |
 | exec (`exec`, `execa`) | processes | when `exec` is allowed | yes | no |
 | memo | the template leaf being rendered | a template leaf; in `-f` and `comb eval` they pass their input through | no: a load error | no |
-| daemon | the network, plugins | refused: `url() runs only in a Source's lines` | yes | no |
+| daemon | the network, plugins | refused: `_.url() runs only in a Source's lines` | yes | no |
 
 A provider's lines run on every read, so they use the pure items only. An item that is not available there is a load
 error that names it. The memo items are a client template's: on a Source's lines they are a load error
@@ -47,7 +61,7 @@ called `watch` and `ttl`, which say when the Source runs again; they are other i
 
 | item | meaning |
 |---|---|
-| `a \| merge(b, ...)`, `merge(a, ...)`, `merge(list)` | deep merge, later wins; a `none` leaf removes; an absent operand adds nothing, and with nothing left the result is undefined |
+| `a \| merge(b, ...)`, `_.merge(a, ...)`, `_.merge(list)` | deep merge, later wins; a `none` leaf removes; an absent operand adds nothing, and with nothing left the result is undefined |
 | `v \| pluck(path)` | deep get by path in the key grammar (`a.b[0]`, `[-1]`, `['k.y']`); any miss is undefined |
 | `obj \| map('filter', arg...)` | applies a filter to each value of an object and keeps the keys; on a list it is jinja's `map` |
 | `obj \| pick(key, ...)` | the object with only the named keys; a key it lacks is skipped; not an object, or a key that is not text, is an error |
@@ -67,18 +81,18 @@ duration reads this grammar.
 | `n \| duration(parts=2, floor='ms')` | seconds as a compact duration: `parts` consecutive units from the largest non-zero one, trailing zero parts dropped, none smaller than `floor`. `7500 \| duration` is `2h5m`, `2530 \| duration(floor='m')` is `42m`, `292000 \| duration` is `3d9h`. What the floor cuts is dropped, not rounded. Zero is `0s` (`0m` with `floor='m'`) |
 
 A time is a number of seconds since the Unix epoch, an integer or a float when there is a fraction; arithmetic is the
-offset (`now() - 3600` is an hour ago). The items below read the render's clock or a time zone, so they are on the
+offset (`_.now() - 3600` is an hour ago). The items below read the render's clock or a time zone, so they are on the
 client and in a Source's lines, and not on a provider's lines. A client render has one clock for the whole resolution:
-every `now()` in it is the same value, and a `comb watch` takes a fresh one for each re-resolve. A Source's lines have
+every `_.now()` in it is the same value, and a `comb watch` takes a fresh one for each re-resolve. A Source's lines have
 the clock of the run they render in, so a stored value is frozen until the next run.
 
 | item | meaning |
 |---|---|
-| `now()` | the clock, in whole epoch seconds |
-| `t \| strftime(fmt, tz=none)` | `t` formatted with `strftime` directives (`%F`, `%H:%M`, `%Z`, ...) in a zone: `tz=`, else the render's `TZ`, else the system's. `now() \| strftime('%H:%M')` is `14:05`. An unknown directive or zone is an error |
+| `_.now()` | the clock, in whole epoch seconds |
+| `t \| strftime(fmt, tz=none)` | `t` formatted with `strftime` directives (`%F`, `%H:%M`, `%Z`, ...) in a zone: `tz=`, else the render's `TZ`, else the system's. `_.now() \| strftime('%H:%M')` is `14:05`. An unknown directive or zone is an error |
 | `s \| fromiso` | an ISO 8601 / RFC 3339 date-time as epoch seconds. `'2026-10-07T03:00:00Z'` and `'2026-10-07T13:00:00+10:00'` are `1791342000`. With no offset it is a time in the render's zone, and a date alone is its midnight. A fraction gives a float. `''` is absent; any other text that is not a date-time is an error |
-| `t \| ago(parts=2, floor='s')` | the distance from `t` to `now()`: `(now() - 11520) \| ago` is `3h12m ago`, a future time is `in 3h12m`, and under the floor it is `now` |
-| `spinner(frames, step='1s')` | the frame for the clock: `frames[floor(now / step) % len]`. `frames` is a string (its characters) or a list; `step` is a duration. `spinner('◐◓◑◒')` |
+| `t \| ago(parts=2, floor='s')` | the distance from `t` to `_.now()`: `(_.now() - 11520) \| ago` is `3h12m ago`, a future time is `in 3h12m`, and under the floor it is `now` |
+| `_.spinner(frames, step='1s')` | the frame for the clock: `frames[floor(now / step) % len]`. `frames` is a string (its characters) or a list; `step` is a duration. `_.spinner('◐◓◑◒')` |
 
 `comb status`, `comb check` and every other place comb shows a duration use the same form, `duration` at its defaults:
 `2d3h`, `2h14m`, `1m18s`, `250ms`, `1s500ms`.
@@ -108,10 +122,10 @@ the clock of the run they render in, so a stored value is frozen until the next 
 | item | meaning |
 |---|---|
 | `p \| read` | the file's text; a missing file is undefined. A relative path is against the render's directory and `~` is the render's `HOME` |
-| `lup(name, all=, files=, dirs=, follow=, git=, root=)` | the nearest path called `name` at or above the render's directory; a miss is undefined |
+| `_.lup(name, all=, files=, dirs=, follow=, git=, root=)` | the nearest path called `name` at or above the render's directory; a miss is undefined |
 | `s \| fromjson`, `s \| fromini` | text to data; text that is not JSON or INI is an error |
-| `exec(cmd, ...)`, `cmd \| exec()` | runs a command |
-| `execa(cmd, ok=, ...)`, `cmd \| execa()` | runs a command as `exec()` does (`timeout=`, `stdin=`, `sh=`) and returns `{stdout, stderr, exit_code, signal}` for any exit, a signal included: `exit_code` is none when a signal ended it, `signal` is none otherwise. `ok=[0, 1]` fails an exit code not in the list, or any signal, as `exec()` fails. A timeout, oversized stdout or spawn error always fails. `{% set r = 'ssh-add -l' \| execa() %}{% if r.exit_code is none or r.exit_code > 1 %}…{% endif %}`; `('ssh-add -l' \| execa(ok=[0, 1])).stdout` |
+| `_.exec(cmd, ...)`, `cmd \| exec()` | runs a command |
+| `_.execa(cmd, ok=, ...)`, `cmd \| execa()` | runs a command as `_.exec()` does (`timeout=`, `stdin=`, `sh=`) and returns `{stdout, stderr, exit_code, signal}` for any exit, a signal included: `exit_code` is none when a signal ended it, `signal` is none otherwise. `ok=[0, 1]` fails an exit code not in the list, or any signal, as `_.exec()` fails. A timeout, oversized stdout or spawn error always fails. `{% set r = 'ssh-add -l' \| execa() %}{% if r.exit_code is none or r.exit_code > 1 %}…{% endif %}`; `('ssh-add -l' \| execa(ok=[0, 1])).stdout` |
 | `p \| realpath` | the absolute path with symlinks followed, against the render's directory and `HOME`; a path that is not there, or `''`, is undefined; any other error names the path. It reads the filesystem, so it is not on a provider's lines |
 | `s \| fromtoml` | a TOML document as a map (a datetime is its text): `'Cargo.toml' \| read \| fromtoml \| pluck('package.version')`; `''` is undefined, text that is not TOML is an error |
 | `s \| fromyaml` | one YAML document as data: `'~/.kube/config' \| read \| fromyaml \| pluck('current-context')`; `''`, or text holding only comments, is undefined; text that is not YAML, or more than one document, is an error |
@@ -132,14 +146,14 @@ pattern is an error, found before the subject is looked at.
 | `s \| truncate(n, end='…')` | cut to `n` columns with `end` counted inside `n`: `'abcdef' \| truncate(4)` is `abc…`; an `end` wider than `n` is dropped, and a wide character that would straddle the cut is dropped whole |
 | `s \| fg(colour)`, `s \| bg(colour)` | the text in a foreground or background colour (below) |
 | `s \| bold`, `dim`, `italic`, `underline`, `invert` | SGR attributes 1, 2, 3, 4 and 7 |
-| `hyperlink(url, text)` | `text` as an OSC 8 terminal link to `url`; absent `text` is undefined, an absent `url` leaves the text unlinked, and a `url` that is not a string or holds a control character is an error |
+| `_.hyperlink(url, text)` | `text` as an OSC 8 terminal link to `url`; absent `text` is undefined, an absent `url` leaves the text unlinked, and a `url` that is not a string or holds a control character is an error |
 | `n \| ramp(thresholds, values)` | `values[i]` for the first threshold `t` with `n < t`, else the last value; thresholds ascend and `values` is one longer (`p \| ramp([50, 80], [th.green, th.orange, th.red])`) |
 | `r \| pct(digits=0)` | a ratio as a percentage, rounded as `'%.Nf' \| format` does: `0.423` is `42%` (`digits` up to 20) |
 | `n \| compact` | `1234` is `1.2k`, `56789` is `57k`; units `k M G T P`, chosen after rounding (`999950` is `1.0M`) |
 | `n \| bytes` | a size in 1024 steps: `1288490188` is `1.2G`; units `B K M G T P`; a negative size is an error |
-| `spark(values, lo=none, hi=none)` | a row of block glyphs (`▁▂▃▄▅▆▇█`), one per number, scaled from `lo` to `hi` (the data's own minimum and maximum when `none`): `spark([1, 5, 3, 8])` is `▁▅▃█`. A value outside the scale is held to it, a `none` value is a space, and equal ends draw the middle glyph. A `values` that is absent is undefined; one that is not a list of numbers is an error |
-| `icon(name)` | the Nerd Fonts glyph called `name`, as one character: `icon('dev-git')`, `icon('fa-github')`, `icon('md-folder')`. Names are Nerd Fonts' own without the `nf-` prefix (the full table of `glyphnames.json`, version in the error below); an absent `name` is undefined and an unknown one is an error, `icon(): unknown glyph 'x' (Nerd Fonts 3.5.1)` |
-| `file_icon(path)` | the glyph for a file, by basename (exact, then lowercased), then by extension (the longest first, so `x.test.ts` is a test file before it is a `.ts` one), else a plain file glyph; it never errors on an unknown file. An absent or empty `path` is undefined. Glyph only: colour is yours (`file_icon(p) \| fg(c)`). Tables are nvim-web-devicons' |
+| `_.spark(values, lo=none, hi=none)` | a row of block glyphs (`▁▂▃▄▅▆▇█`), one per number, scaled from `lo` to `hi` (the data's own minimum and maximum when `none`): `_.spark([1, 5, 3, 8])` is `▁▅▃█`. A value outside the scale is held to it, a `none` value is a space, and equal ends draw the middle glyph. A `values` that is absent is undefined; one that is not a list of numbers is an error |
+| `_.icon(name)` | the Nerd Fonts glyph called `name`, as one character: `_.icon('dev-git')`, `_.icon('fa-github')`, `_.icon('md-folder')`. Names are Nerd Fonts' own without the `nf-` prefix (the full table of `glyphnames.json`, version in the error below); an absent `name` is undefined and an unknown one is an error, `_.icon(): unknown glyph 'x' (Nerd Fonts 3.5.1)` |
+| `_.file_icon(path)` | the glyph for a file, by basename (exact, then lowercased), then by extension (the longest first, so `x.test.ts` is a test file before it is a `.ts` one), else a plain file glyph; it never errors on an unknown file. An absent or empty `path` is undefined. Glyph only: colour is yours (`_.file_icon(p) \| fg(c)`). Tables are nvim-web-devicons' |
 
 **Display width.** Wherever an item measures text it counts terminal columns: East Asian wide and emoji-presentation
 characters are 2, combining marks are 0, and escape sequences (CSI such as colours, and OSC such as `hyperlink`) are 0.
@@ -169,15 +183,15 @@ environment; `comb eval` and `comb get` pass the process environment. Without th
 
 | item | meaning |
 |---|---|
-| `log.debug(msg)`, `log.info(msg)`, `log.warn(msg)` | writes a line at that level and renders nothing; the render goes on. A non-string is written as its text. A line an origin repeats on every run is written when it first appears or changes, then counted: a different line follows `msg (repeated N times)`. A render with no origin is not counted |
-| `log.error(msg)`, `fail(msg)` | fails the render with `msg`, as a failed `exec()` does. `fail(msg)` is `log.error(msg)` |
-| `log.fatal(msg)` | fails as `log.error`, and stops a daemon Source's retries: no poll, watch or read runs that instance again, and `comb status` shows it stopped (`⚠ stop`) with `msg`. Reads keep the last good value. It never expires; it is re-armed by a change to a file the failed run read, a configuration reload, `comb refresh` of a key the Source serves, or `comb get --force` on one |
+| `_.log.debug(msg)`, `_.log.info(msg)`, `_.log.warn(msg)` | writes a line at that level and renders nothing; the render goes on. A non-string is written as its text. A line an origin repeats on every run is written when it first appears or changes, then counted: a different line follows `msg (repeated N times)`. A render with no origin is not counted |
+| `_.log.error(msg)`, `_.fail(msg)` | fails the render with `msg`, as a failed `_.exec()` does. `_.fail(msg)` is `_.log.error(msg)` |
+| `_.log.fatal(msg)` | fails as `_.log.error`, and stops a daemon Source's retries: no poll, watch or read runs that instance again, and `comb status` shows it stopped (`⚠ stop`) with `msg`. Reads keep the last good value. It never expires; it is re-armed by a change to a file the failed run read, a configuration reload, `comb refresh` of a key the Source serves, or `comb get --force` on one |
 
-`log` has these five methods; another (`log.critical`) is an error that lists them. Put the failure check first and the
+`_.log` has these five methods; another (`_.log.critical`) is an error that lists them. Put the failure check first and the
 happy path last:
 
 ```jinja
-{% if not env.SSH_AUTH_SOCK %}{{ fail('no ssh agent') }}{% endif %}{{ happy path }}
+{% if not env.SSH_AUTH_SOCK %}{{ _.fail('no ssh agent') }}{% endif %}{{ happy path }}
 ```
 
 A Source's run that fails keeps its last good value and backs off (see "When the command fails" in
@@ -190,7 +204,7 @@ client they go nowhere yet.
 
 A leaf piped through `cache()` renders once per change rather than once per read. The daemon holds its value, the
 leaf's **memo**, in the `<p>:memo` facet; a read whose `cache()` finds a live memo under the same hash stops there and
-answers with it, so whatever follows `cache()` in the leaf, an `exec()` above all, does not run.
+answers with it, so whatever follows `cache()` in the leaf, an `_.exec()` above all, does not run.
 
 ```toml
 [client.providers.kubecontext]
@@ -203,13 +217,13 @@ template.context = '''{{ 'kubectl config current-context 2>/dev/null || true'
 
 | item | meaning |
 |---|---|
-| `v \| watch(path, ...)` | `v`, with each path recorded as a file whose change invalidates the memo. A path is a string or a list of them (`\| split(':')` splits a colon list); `none` and `''` add nothing; with no argument the path is `v` (`lup('.terraform/environment') \| watch() \| cache() \| read`). `~` is the render's `HOME` and a relative path is against the render's directory, as `read` reads one; a path that is there is canonicalised, one that is not is kept as written, and its appearing is a change |
+| `v \| watch(path, ...)` | `v`, with each path recorded as a file whose change invalidates the memo. A path is a string or a list of them (`\| split(':')` splits a colon list); `none` and `''` add nothing; with no argument the path is `v` (`_.lup('.terraform/environment') \| watch() \| cache() \| read`). `~` is the render's `HOME` and a relative path is against the render's directory, as `read` reads one; a path that is there is canonicalised, one that is not is kept as written, and its appearing is a change |
 | `v \| ttl(d)` | `v`, with `d` recorded as how long the memo is valid: one duration of whole seconds, at least `1s`, as `put --ttl` takes (`'500ms'` is an error); `none` records nothing. A second `ttl()` in one leaf is an error |
 | `v \| cache(input, ...)` | the read. It hashes its inputs, `v` when it is given none, and each file `watch()` recorded as it is now. A memo stored under that hash and within its ttl ends the render with the memo's value; otherwise `v` passes on and the leaf renders, and its final output is stored as the new memo |
 
 What a read does:
 
-- **A hit** is the memo's value, what followed `exec()` included (`or none`, `| fromjson`): the stored value is the
+- **A hit** is the memo's value, what followed `_.exec()` included (`or none`, `| fromjson`): the stored value is the
   leaf's final output. A memo may record absence: a leaf that rendered nothing is remembered as nothing, and a hit on it
   is a miss of the key (`null` is never stored).
 - **A miss** renders the leaf, hands the value to whoever asked, then writes the memo back at the read's directory, with
@@ -264,7 +278,7 @@ skip nothing.
 
 ### Bars
 
-`bar(width, part, ..., empty=none, fill_fg=none, text_fg=none, label_fg=none, bold=false)` is one styled row exactly
+`_.bar(width, part, ..., empty=none, fill_fg=none, text_fg=none, label_fg=none, bold=false)` is one styled row exactly
 `width` terminal columns wide, made of **labels** and **tracks**, in a single call. Each positional `part` after the
 width is one of:
 
@@ -297,10 +311,10 @@ fill colour; an unfilled column holding a character is `text_fg` on `empty`; an 
 foreground and not bold. A label is one run. `bold` applies to all but the unfilled spaces. A wide character takes two
 columns as one run. A marker that lands on a wide character keeps the row its width: it replaces the character and a
 space keeps the other column. With colour off the row is its characters only. Pass shared style in a mapping with `**`:
-`bar(w, track, **style)`.
+`_.bar(w, track, **style)`.
 
 ```jinja
-{{ bar(26,
+{{ _.bar(26,
        {'value': 0.30, 'colour': th.orange, 'from_right': true, 'marker': 0.16, 'text': ' 30%      '},
        '  5H  ',
        {'value': 0.16, 'colour': th.green, 'text': ' 4h12m'},

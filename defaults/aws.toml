@@ -15,7 +15,7 @@ data = "{{ (env.AWS_CONFIG_FILE or '~/.aws/config') | read | fromini }}"
 result = '''{% set profiles = namespace(found={}) %}
 {% for section, keys in (data or {}) | items %}
   {% set name = 'default' if section == 'default' else ((section[8:] | trim) if section is startingwith('profile ') else '') %}
-  {% if name and keys.region %}{% set profiles.found = merge(profiles.found, {name: {'region': keys.region}}) %}{% endif %}
+  {% if name and keys.region %}{% set profiles.found = _.merge(profiles.found, {name: {'region': keys.region}}) %}{% endif %}
 {% endfor %}
 {{ profiles.found }}'''
 # The default path is watched (a watch names a constant), and polled every minute as a backstop; a

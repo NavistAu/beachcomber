@@ -5,7 +5,7 @@ title: From an HTTP API
 
 # A provider from an HTTP API
 
-Call `url()` in a Source's `data` line. The daemon makes the request itself, with no `curl` process, and caches the fields
+Call `_.url()` in a Source's `data` line. The daemon makes the request itself, with no `curl` process, and caches the fields
 you pick out of the response.
 
 ## A public endpoint
@@ -13,7 +13,7 @@ you pick out of the response.
 ```toml
 # ~/.config/beachcomber/conf.d/github-status.toml
 [daemon.providers.status.sources.main]
-data = "{{ url('https://www.githubstatus.com/api/v2/status.json') | fromjson }}"
+data = "{{ _.url('https://www.githubstatus.com/api/v2/status.json') | fromjson }}"
 result.indicator = "{{ data.status.indicator }}"
 result.description = "{{ data.status.description }}"
 return = "{{ result | poll('60s') | failback('5s', 3) }}"
@@ -28,12 +28,12 @@ description=All Systems Operational
 indicator=none
 ```
 
-`url()` returns the response body as text; `| fromjson` parses it. `result.<field>` lines pick fields out of the parsed
+`_.url()` returns the response body as text; `| fromjson` parses it. `result.<field>` lines pick fields out of the parsed
 body, and `result = "{{ data.rate }}"` would make one whole object the provider's fields instead:
 
 ```toml
 [daemon.providers.gh_rate.sources.main]
-data = '''{{ url('https://api.github.com/rate_limit', headers={'Accept': 'application/json'})
+data = '''{{ _.url('https://api.github.com/rate_limit', headers={'Accept': 'application/json'})
   | fromjson }}'''
 result = "{{ data.rate }}"
 return = "{{ result | poll('5m') }}"
@@ -52,9 +52,9 @@ used=2
 
 For a body that is not JSON, leave out `fromjson` and use the text: `result.body = "{{ data | trim }}"`.
 
-## `url()` arguments
+## `_.url()` arguments
 
-`url(address, method='GET', headers={}, body=none, timeout='10s')`
+`_.url(address, method='GET', headers={}, body=none, timeout='10s')`
 
 | argument | meaning |
 |---|---|
@@ -68,7 +68,7 @@ A POST with a token and a JSON body:
 
 ```toml
 [daemon.providers.echo.sources.main]
-data = '''{{ url('https://httpbin.org/anything',
+data = '''{{ _.url('https://httpbin.org/anything',
     method='POST',
     headers={
       'Authorization': 'Bearer ' ~ env.API_TOKEN,
@@ -94,7 +94,7 @@ comb get echo -f json
 }
 ```
 
-`url()` runs only in the daemon. In a client template it is an error, `url() runs only in a Source's lines`.
+`_.url()` runs only in the daemon. In a client template it is an error, `_.url() runs only in a Source's lines`.
 
 ## Keep secrets in the env file
 

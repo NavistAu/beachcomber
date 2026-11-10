@@ -255,7 +255,7 @@ pub(crate) fn config_failures(config: &Config) -> Vec<String> {
 /// Validate the config file, as
 /// `run_daemon_with_cancel` does at startup.
 ///
-/// The provider set is `ProviderRegistry::load`'s. A Source's `plugin()` calls
+/// The provider set is `ProviderRegistry::load`'s. A Source's `_.plugin()` calls
 /// are linted, not run, so nothing is `dlopen`ed in the checking process.
 fn local_config_verdicts(config: &Config) -> Vec<serde_json::Value> {
     // The composition and loader the daemon uses, with the variables a daemon

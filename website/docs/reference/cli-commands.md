@@ -20,7 +20,7 @@ Every command has a single-letter shorthand. Long forms (`get`, `status`, etc.) 
 | `.t` / `.T` | `tsv` / `TSV` | tab-separated; uppercase adds a header row |
 | `.f TEMPLATE` | `TEMPLATE` | a template: any `-f` value holding `{{` or `{%` |
 
-A `-f` template renders exactly as `comb eval` renders one — `env`, `comb.*`, provider refs and `exec()` all read as they do there — with what the command read bound beside them: `value` (`values`, in key order, for several keys) and an object's fields by name on `get` and `watch`, and each row's fields (`provider`, `path`, `field`, `source`, `value`, `age_ms`, `age_human`, `kind`, …) on `status`. A name it binds is never fetched as a provider. A template that does not compile fails the command once (`-f: template compile error: …`, exit 2); a `status` row whose render fails shows the error in its place.
+A `-f` template renders exactly as `comb eval` renders one — `env`, `comb.*`, provider refs and `_.exec()` all read as they do there — with what the command read bound beside them: `value` (`values`, in key order, for several keys) and an object's fields by name on `get` and `watch`, and each row's fields (`provider`, `path`, `field`, `source`, `value`, `age_ms`, `age_human`, `kind`, …) on `status`. A name it binds is never fetched as a provider. A template that does not compile fails the command once (`-f: template compile error: …`, exit 2); a `status` row whose render fails shows the error in its place.
 
 A template is recognised by its tags, never by not being a format's name: `-f` with anything else must name a format the command has, or it's refused (`get has no 'bogus' format: expected text (default), json, sh, csv, CSV, tsv, TSV, or a template ({{ … }})`). `status` also has `table` (an uncoloured `human`), and `check config --origins` takes `human` or `json`.
 
@@ -50,7 +50,7 @@ A suffix applies only to a command that has `-f` and that format: `comb p.j` is 
 
 The three conflict with one another, and with none the command addresses the current directory. A relative path is the caller's, not the daemon's, and a leading `~` the shell left unexpanded (because it was quoted) is `$HOME`; `~user` is an error. The SDKs read a path the same way, through the same function, and the daemon refuses any path that is not absolute.
 
-A template rendered for a read runs its `exec()`, `lup()` and `read` in the directory the read addresses — the given path, else the current directory, and `$HOME` for `--global` — so `comb get t.x ./repo`, `comb eval '{{ t.x }}' ./repo`, `comb watch t.x ./repo` and an SDK's `resolve(t.x, cwd=./repo)` look at the same files.
+A template rendered for a read runs its `_.exec()`, `_.lup()` and `read` in the directory the read addresses — the given path, else the current directory, and `$HOME` for `--global` — so `comb get t.x ./repo`, `comb eval '{{ t.x }}' ./repo`, `comb watch t.x ./repo` and an SDK's `resolve(t.x, cwd=./repo)` look at the same files.
 
 ## Durations
 
@@ -64,7 +64,7 @@ Every command exits the same way, whatever its format — the format is applied 
 
 - `0` — done. A read that found nothing, a miss, is done too: `text` prints nothing, `json` prints `null`, and a miss among several keys holds its place.
 - `1` — a miss, under `--strict` (`get` and `eval`); and `check` finding something worth a look (`WARN`).
-- `2` — an error: the daemon unreachable or refusing, a key the grammar cannot read, a template that does not compile, a failed `exec()`, a `kill` the daemon outlived, a `check` `FAIL`.
+- `2` — an error: the daemon unreachable or refusing, a key the grammar cannot read, a template that does not compile, a failed `_.exec()`, a `kill` the daemon outlived, a `check` `FAIL`.
 
 `--strict` is a global flag, accepted before or after the command (`comb --strict g git.branch`, `comb g git.branch --strict`); `BEACHCOMBER_STRICT=1` sets it (`0`, `false`, `no`, `off` or empty leave it off), and the flag wins.
 
@@ -72,9 +72,9 @@ Every command exits the same way, whatever its format — the format is applied 
 
 `--color auto|always|never` and `--ascii` are global flags, accepted before or after the command, and every command that draws — `status`, `check`, `check config --origins`, `status --help`'s legend — draws by them. `--color` wins over `NO_COLOR`, which counts only when it holds something (an empty `NO_COLOR` is unset). Under `auto`, the default, a table is coloured on a terminal unless `NO_COLOR` is set. `--ascii` swaps every Unicode mark, tree branch, ellipsis and dash for its ASCII form.
 
-The template filters `fg`, `bg`, `bold` and `dim` follow the same choice without asking for a terminal — a prompt reads them through a pipe — so they draw their escapes unless `NO_COLOR` is set in the render's environment or `--color never` is given, and `--color always` draws them whatever `NO_COLOR` says. `--color` is written into the environment of the run, so `env.NO_COLOR` and an `exec()` child see the same choice. An SDK's `resolve`/`eval` reads `NO_COLOR` from the `env` it is handed.
+The template filters `fg`, `bg`, `bold` and `dim` follow the same choice without asking for a terminal — a prompt reads them through a pipe — so they draw their escapes unless `NO_COLOR` is set in the render's environment or `--color never` is given, and `--color always` draws them whatever `NO_COLOR` says. `--color` is written into the environment of the run, so `env.NO_COLOR` and an `_.exec()` child see the same choice. An SDK's `resolve`/`eval` reads `NO_COLOR` from the `env` it is handed.
 
-`--no-exec` is a global flag too: every template the command renders (`get`, `eval`, `watch`, a `status` row or `-f` template) runs with `exec()` off, so a template that calls it fails with `exec() is disabled in this context` and nothing is spawned. Without it, `comb` allows `exec()`, as it is the user's own shell. The SDK subprocess tiers pass it for a client whose `exec` option is off, which is the default.
+`--no-exec` is a global flag too: every template the command renders (`get`, `eval`, `watch`, a `status` row or `-f` template) runs with `_.exec()` off, so a template that calls it fails with `exec() is disabled in this context` and nothing is spawned. Without it, `comb` allows `_.exec()`, as it is the user's own shell. The SDK subprocess tiers pass it for a client whose `exec` option is off, which is the default.
 
 ## `comb g` (get) `<key>... [path] [-p <path>] [--global] [-f format]`
 
@@ -106,7 +106,7 @@ Brackets are the one quoting form; quote the whole key for the shell (`comb g 'p
 
 The `provider.field` form automatically routes to the source that owns the field — a source name is metadata on the record, never a key you address directly. Unlike a field, a source has no address at all.
 
-**Templates.** A key whose namespace carries a template (`[client.providers.<p>] template.*` in configuration, the managed `defaults/`, or a `comb p <p>:template.<f>`) is rendered by `comb get` with this shell's environment and directory — `comb g python.version`, `comb g aws.region` and `comb g kubecontext.context` are all templates, and `exec()` is enabled here. A template at a cached field's path wins on read. A template that does not compile, or cycles, exits `2` with a message naming the field — for a namespace query too, so `comb g scanline` fails on a broken `scanline.widgets.foo` rather than silently omitting it; a runtime failure such as a failed `exec()` is omitted from a namespace object and fails a single-leaf query. See [Configuration Reference — Templates](../concepts/templates.md). A template that caches its value (`| cache()`) is served from its memo while the memo is live, and runs nothing then; a read that renders it prints the value first and writes the new memo back before it exits. See [Caching a template](/docs/reference/template-library#caching-a-template).
+**Templates.** A key whose namespace carries a template (`[client.providers.<p>] template.*` in configuration, the managed `defaults/`, or a `comb p <p>:template.<f>`) is rendered by `comb get` with this shell's environment and directory — `comb g python.version`, `comb g aws.region` and `comb g kubecontext.context` are all templates, and `_.exec()` is enabled here. A template at a cached field's path wins on read. A template that does not compile, or cycles, exits `2` with a message naming the field — for a namespace query too, so `comb g scanline` fails on a broken `scanline.widgets.foo` rather than silently omitting it; a runtime failure such as a failed `_.exec()` is omitted from a namespace object and fails a single-leaf query. See [Configuration Reference — Templates](../concepts/templates.md). A template that caches its value (`| cache()`) is served from its memo while the memo is live, and runs nothing then; a read that renders it prints the value first and writes the new memo back before it exits. See [Caching a template](/docs/reference/template-library#caching-a-template).
 
 ```sh
 # Query a specific field — text is the default
@@ -151,7 +151,7 @@ comb g --wait 0 git.branch .
 
 # Template-backed keys render here, with this shell's environment
 comb g python.version .              # → 3.12.1 (defaults/python.toml's cascade)
-comb g kubecontext.context           # → prod-cluster (kubectl, through exec())
+comb g kubecontext.context           # → prod-cluster (kubectl, through _.exec())
 comb g scanline:template.widgets.foo # → {{ env.SCANLINE_FOO }} (the raw template)
 
 # The global entry ($HOME) alone, ignoring the current directory
@@ -200,7 +200,7 @@ watch -c 'comb status --color=always'
 viddy 'comb status --color=always'
 ```
 
-`watch` needs its own `-c` to interpret the colour it is handed; without it the escape sequences render as literal text. Each refresh re-renders the caller's template leaves, `exec()` included, so a tight interval multiplies whatever the templates spawn.
+`watch` needs its own `-c` to interpret the colour it is handed; without it the escape sequences render as literal text. Each refresh re-renders the caller's template leaves, `_.exec()` included, so a tight interval multiplies whatever the templates spawn.
 
 ```sh
 $ comb s
@@ -275,9 +275,9 @@ scanline            greeting  rendered  ▸ hi jane           ~/ws/project  0s  
 
 A cached field with a template over it shows **both** rows at that same address — `git.branch` cached by the `head` Source plus a `git:template.branch` override both list, so the raw cached value and the effective rendered one are visible side by side rather than one hiding the other. A leaf whose expression fails to render shows the failure text as its value instead of dropping the row.
 
-A rendered row is marked in its VALUE cell: cyan when colour is on, a `▸ ` lead-in (`> ` under `--ascii`) when it's off. In the structured formats (`json`, `tsv`, `csv`, `sh`, a `-f` template's row fields) it carries `kind: rendered` and `source: rendered` (`memo` when served from its memo), and it's selectable on its own with `--filter lifecycle=rendered`. A `provider` filter that rules a provider out entirely skips resolving that provider's templates — and any `exec()` inside them — rather than rendering them only to discard the rows afterward.
+A rendered row is marked in its VALUE cell: cyan when colour is on, a `▸ ` lead-in (`> ` under `--ascii`) when it's off. In the structured formats (`json`, `tsv`, `csv`, `sh`, a `-f` template's row fields) it carries `kind: rendered` and `source: rendered` (`memo` when served from its memo), and it's selectable on its own with `--filter lifecycle=rendered`. A `provider` filter that rules a provider out entirely skips resolving that provider's templates — and any `_.exec()` inside them — rather than rendering them only to discard the rows afterward.
 
-Rendering resolves with this shell's own environment and directory, and `exec()` is enabled, as for `comb get`, `comb eval` and `comb watch`.
+Rendering resolves with this shell's own environment and directory, and `_.exec()` is enabled, as for `comb get`, `comb eval` and `comb watch`.
 
 In the `human`/`table` preset, SOURCE keeps its tail past 24 characters (less at a narrow `--max-width`, since it shares the same truncation budget as VALUE and PATH) — a `config(<file>)` label is a whole path, and its tail (`…/defaults/aws.toml`) is what tells one config file from another — unless `--no-trunc`.
 
@@ -330,7 +330,7 @@ agent     session  put     {"ctx_pct":42,"name":"claude"}  -     0s      -  ---
 | `0`  | Decay 4   | 0 remaining — next tick evicts |
 | `---` | Once / Static / Template | no lifecycle (hostname, put entries, a rendered template row) |
 
-A `∙` trailing indicator means the entry watches its files while it is Active; a decaying entry has dropped its watches, and a read checks its files instead. A `⚠` lead replaces `★` when the provider is in failure-suppress (row renders red). `⚠ #03` counts the failures in a row, and POLL counts down to the retry; `⚠ stop` is a Source a template's `log.fatal(msg)` stopped: no retry is coming (POLL is `-`), VALUE shows the message when nothing is stored, and it runs again only after a change to a file its run read, a configuration reload, `comb refresh` or `comb get --force`.
+A `∙` trailing indicator means the entry watches its files while it is Active; a decaying entry has dropped its watches, and a read checks its files instead. A `⚠` lead replaces `★` when the provider is in failure-suppress (row renders red). `⚠ #03` counts the failures in a row, and POLL counts down to the retry; `⚠ stop` is a Source a template's `_.log.fatal(msg)` stopped: no retry is coming (POLL is `-`), VALUE shows the message when nothing is stored, and it runs again only after a change to a file its run read, a configuration reload, `comb refresh` or `comb get --force`.
 
 The default output preset is `human` (coloured table) regardless of whether stdout is a TTY. Scripts that want tab-separated data should pass `-f tsv` explicitly. Colour follows `--color`: `auto` (the default) colours only a TTY, so piping into a pager or a live viewer needs `--color=always`.
 
@@ -474,7 +474,7 @@ comb e '{% if git.dirty %}*{{ git.branch }}{% else %}{{ git.branch }}{% endif %}
 comb e '{{ git.branch | truncate(20) }}' .
 ```
 
-Available filters: minijinja's built-ins (`default`, `upper`, `lower`, `length`, `tojson`, …) plus `truncate`, `basename`, `fg`, `bg`, `bold`, `dim` and `fromjson` (parse a string — typically `exec()` output — as JSON). `fg`, `bg`, `bold` and `dim` hand their text back unchanged under `NO_COLOR` or `--color never` ([Colour and glyphs](#colour-and-glyphs)).
+Available filters: minijinja's built-ins (`default`, `upper`, `lower`, `length`, `tojson`, …) plus `truncate`, `basename`, `fg`, `bg`, `bold`, `dim` and `fromjson` (parse a string — typically `_.exec()` output — as JSON). `fg`, `bg`, `bold` and `dim` hand their text back unchanged under `NO_COLOR` or `--color never` ([Colour and glyphs](#colour-and-glyphs)).
 
 The natural type a typed expression keeps is mostly *not* visible
 in `comb e`'s own output, which is text: a bool prints `true`, and so does the
@@ -486,21 +486,21 @@ them.
 
 **Exit codes:** `0` on success, an absent value included (it prints nothing); `1` for an absent value under `--strict`; `2` on error.
 
-### `exec()` — running a command from an expression
+### `_.exec()` — running a command from an expression
 
-A value expression evaluated by `comb e` can call `exec()` to run a command and use its output:
+A value expression evaluated by `comb e` can call `_.exec()` to run a command and use its output:
 
 ```sh
-comb e '{{ exec("git rev-parse --short HEAD") }}' .
-comb e '{{ exec(["git", "rev-parse", "--short", "HEAD"]) }}' .
+comb e '{{ _.exec("git rev-parse --short HEAD") }}' .
+comb e '{{ _.exec(["git", "rev-parse", "--short", "HEAD"]) }}' .
 ```
 
 | | |
 |---|---|
-| Signature | `exec(cmd, timeout='10s', stdin=none, sh='sh')`, or the filter `cmd \| exec()` (a command from both the pipe and an argument is an error) |
+| Signature | `_.exec(cmd, timeout='10s', stdin=none, sh='sh')`, or the filter `cmd \| exec()` (a command from both the pipe and an argument is an error) |
 | Spawn | a **string** runs under `sh -c` (`sh=` names another shell): the shell expands `$FOO`, globs and pipes, and quoting is yours. A **list** is argv, no shell: each element is exactly one argument and `'$FOO'` stays literal. |
 | Environment and directory | the child's environment is exactly the render's `env` map (this shell's environment for `comb`, `env_json` for an SDK) — `$FOO` and `env.FOO` read the same value — and its working directory is the render's. |
-| List element coercion | string → itself; bool → `"true"`/`"false"` (not minijinja's `Display`, which prints `True`/`False`); number → its canonical string form; `undefined`/`none` → error (typically a missed daemon ref reaching `exec()` un-guarded); a sequence or map → error, pointing at `stdin=` instead |
+| List element coercion | string → itself; bool → `"true"`/`"false"` (not minijinja's `Display`, which prints `True`/`False`); number → its canonical string form; `undefined`/`none` → error (typically a missed daemon ref reaching `_.exec()` un-guarded); a sequence or map → error, pointing at `stdin=` instead |
 | `timeout` | keyword, a duration in the one grammar (`'2s'`, `'500ms'`, or a number of seconds), default `'10s'`. A command still running at the deadline is killed (whole process group) and the call fails. |
 | `stdin` | keyword, default none. Must be a string — pass structured data through `\| tojson` first (e.g. `stdin=(some_map \| tojson)`). |
 | Output | stdout, lossy-UTF-8 decoded, with at most one trailing `\n` (and a preceding `\r`) stripped |
@@ -508,7 +508,7 @@ comb e '{{ exec(["git", "rev-parse", "--short", "HEAD"]) }}' .
 | Failure | a non-zero exit, a timeout, an oversized stdout, or a spawn error is an eval error naming the command, with stderr (truncated) attached |
 | Availability | Every CLI surface that renders a template — `comb get`, `comb eval`, `comb watch`, `comb status`, and a `-f` template on any of them — since the CLI user already has a shell, and an SDK client constructed with `exec` on (`Client(exec=True)` and the equivalent in each SDK; off by default). A call on an SDK client without the option fails immediately with `exec() is disabled in this context`. |
 
-`exec()` always runs client-side — the daemon never executes it, the same as every other value expression. See the [Configuration Reference](./template-library.md) for a template that wraps a script call.
+`_.exec()` always runs client-side — the daemon never executes it, the same as every other value expression. See the [Configuration Reference](./template-library.md) for a template that wraps a script call.
 
 ## `comb i` (init)
 

@@ -1,6 +1,6 @@
 //! `git`: the plugin compiled into comb, for what a repository says through
 //! its files and git's own commands. `defaults/git.toml`'s Sources call it, one
-//! symbol each, `plugin('git', '<symbol>', root)`.
+//! symbol each, `_.plugin('git', '<symbol>', root)`.
 //!
 //! | symbol | answers | commands | a change to these runs it again |
 //! |---|---|---|---|

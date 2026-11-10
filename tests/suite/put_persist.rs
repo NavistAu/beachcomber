@@ -187,7 +187,10 @@ fn a_corrupt_file_is_warned_about_ignored_and_replaced() {
         text.contains("persisted puts") && text.contains("ignored"),
         "{text}"
     );
-    assert_eq!(h.entries(), vec![json!({"key": "p.v", "data": 1})]);
+    assert_eq!(
+        h.entries(),
+        vec![json!({"key": "p.v", "data": 1, "schema": 2})]
+    );
 }
 
 #[test]

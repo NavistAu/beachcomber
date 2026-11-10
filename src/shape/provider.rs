@@ -28,7 +28,7 @@
 //! as composed, the managed `defaults/` layer included. A configuration with
 //! no such layer has no `template` and no `return` line, so no `:template`
 //! facet is seeded or attached; its `result` is the one line the code
-//! supplies, `{{ merge(sources) }}` ([`DEFAULT_RESULT`]).
+//! supplies, `{{ _.merge(sources) }}` ([`DEFAULT_RESULT`]).
 //!
 //! The shipped lines are what nearly every read runs, so the renderer is
 //! skipped for them: a `result` that is the default merge is the per-Source
@@ -66,7 +66,7 @@ use tokio::time::Instant;
 
 /// The `result` of a provider whose chain has no line: the merge of its
 /// Sources. The one line the code supplies; every other comes from a file.
-pub const DEFAULT_RESULT: &str = "{{ merge(sources) }}";
+pub const DEFAULT_RESULT: &str = "{{ _.merge(sources) }}";
 
 /// The `result` of a provider with `enabled = false`: it produces nothing.
 pub const DISABLED_RESULT: &str = "{{ {} }}";
@@ -358,15 +358,15 @@ fn squeezed(line: &str) -> String {
         .collect()
 }
 
-/// Whether `line` is the default `result`: `{{ merge(sources) }}`, whitespace
+/// Whether `line` is the default `result`: `{{ _.merge(sources) }}`, whitespace
 /// aside. Only then do two Sources of a provider owe each other distinct field
 /// names; an author who writes the merge has chosen an order.
 ///
 /// A text test, because minijinja exposes no syntax tree to ask "is this
-/// exactly `merge(sources)`"; the single tag is told from the text around it
+/// exactly `_.merge(sources)`"; the single tag is told from the text around it
 /// by the same rule every other line is.
 pub fn is_default_result(line: &str) -> bool {
-    single_tag_expression(line).is_some_and(|expr| squeezed(expr) == "merge(sources)")
+    single_tag_expression(line).is_some_and(|expr| squeezed(expr) == "_.merge(sources)")
 }
 
 /// The two `return` lines that hand the data on as it is (the second also
@@ -512,7 +512,7 @@ impl ProviderLines {
                                 errors.insert(format!(
                                     "{at}: sources.{source}(): the abstract provider applies to \
                                      every provider, so it cannot name one of their Sources: use \
-                                     merge(sources)"
+                                     _.merge(sources)"
                                 ));
                                 continue;
                             }
@@ -595,7 +595,10 @@ impl ProviderLines {
             vars.into_iter().map(|(k, v)| (k.to_string(), v)).collect();
         vars.push((
             "_".into(),
-            MjValue::from(Serde(serde_json::json!({"name": provider}))),
+            libbeachcomber::library::underscore_with(
+                self.probe.env(),
+                &[("name", MjValue::from(provider))],
+            ),
         ));
         let sink = MjValue::from_object(FacetSink::default());
         let value = render_level(self.probe.env(), &lines, 0, &Arc::new(vars), &sink)
@@ -1151,7 +1154,10 @@ mod tests {
             chains.effective(Key::Template),
             Some("{{ client.providers[_.name].template }}")
         );
-        assert_eq!(chains.effective(Key::Result), Some("{{ merge(sources) }}"));
+        assert_eq!(
+            chains.effective(Key::Result),
+            Some("{{ _.merge(sources) }}")
+        );
         assert_eq!(
             chains.effective(Key::Return),
             Some("{{ result | facet('template', template) }}")
@@ -1162,7 +1168,7 @@ mod tests {
     fn an_own_line_is_the_whole_value_and_an_absent_one_is_the_abstracts() {
         let git = lines("[git]\nreturn = \"{{ result }}\"").chains_for("git");
         assert_eq!(git.effective(Key::Return), Some("{{ result }}"));
-        assert_eq!(git.effective(Key::Result), Some("{{ merge(sources) }}"));
+        assert_eq!(git.effective(Key::Result), Some("{{ _.merge(sources) }}"));
         assert_eq!(git.of(Key::Return).len(), 2, "super reaches the abstract");
     }
 
@@ -1207,7 +1213,7 @@ mod tests {
 
     #[test]
     fn explicit_merge_last_wins() {
-        let lines = lines("[demo]\nresult = \"{{ merge(sources.a(), sources.b()) }}\"");
+        let lines = lines("[demo]\nresult = \"{{ _.merge(sources.a(), sources.b()) }}\"");
         let got = result(
             &lines,
             "demo",
@@ -1394,7 +1400,7 @@ mod tests {
                 "return",
                 "{{ result | watch('a') | facet('template', template) }}",
             ),
-            ("result", "{{ merge(sources) | ttl(5) }}"),
+            ("result", "{{ _.merge(sources) | ttl(5) }}"),
             ("return", "{{ result | nearest }}"),
         ] {
             let errs = errors(&format!("[demo]\n{key} = \"{line}\""));
@@ -1449,9 +1455,11 @@ mod tests {
 
     #[test]
     fn the_default_result_is_told_by_its_text() {
-        assert!(is_default_result("{{ merge(sources) }}"));
-        assert!(is_default_result("{{merge( sources )}}"));
-        assert!(!is_default_result("{{ merge(sources.a(), sources.b()) }}"));
+        assert!(is_default_result("{{ _.merge(sources) }}"));
+        assert!(is_default_result("{{_.merge( sources )}}"));
+        assert!(!is_default_result(
+            "{{ _.merge(sources.a(), sources.b()) }}"
+        ));
     }
 
     #[test]
@@ -1486,15 +1494,15 @@ mod tests {
     #[test]
     fn a_provider_line_cannot_call_anything_that_does_io() {
         for line in [
-            "{{ exec('echo') }}",
+            "{{ _.exec('echo') }}",
             "{{ 'a' | exec }}",
             "{{ 'x' | read }}",
             "{{ 'x' | stat }}",
             "{{ 'x' | realpath }}",
             "{{ 'x*' | glob }}",
-            "{{ lup('a') }}",
-            "{{ url('http://x') }}",
-            "{{ plugin('a', 'b') }}",
+            "{{ _.lup('a') }}",
+            "{{ _.url('http://x') }}",
+            "{{ _.plugin('a', 'b') }}",
         ] {
             for key in ["template", "result", "return"] {
                 let errs = errors(&format!("[demo]\n{key} = \"{line}\""));
@@ -1572,11 +1580,11 @@ mod tests {
     #[test]
     fn a_provider_line_cannot_read_the_clock() {
         for line in [
-            "{{ now() }}",
+            "{{ _.now() }}",
             "{{ 1 | strftime('%F') }}",
             "{{ 'x' | fromiso }}",
             "{{ 1 | ago }}",
-            "{{ spinner('ab') }}",
+            "{{ _.spinner('ab') }}",
         ] {
             for key in ["template", "result", "return"] {
                 let errs = errors(&format!("[demo]\n{key} = \"{line}\""));
@@ -1597,7 +1605,7 @@ mod tests {
             let available = item.tier.available(Surface::Provider);
             let call = match item.form {
                 libbeachcomber::library::Form::Filter => format!("{{{{ 'x' | {} }}}}", item.name),
-                _ => format!("{{{{ {}('x') }}}}", item.name),
+                _ => format!("{{{{ _.{}('x') }}}}", item.name),
             };
             let errs = errors(&format!("[demo]\nresult = \"{call}\""));
             let named = errs.iter().any(|e| {
@@ -1812,7 +1820,7 @@ mod tests {
 
     #[test]
     fn a_dict_literal_does_not_end_a_tag_early() {
-        let errs = errors("[demo]\nresult = \"{{ {'a': {'b': 1}} | merge(exec('x')) }}\"");
+        let errs = errors("[demo]\nresult = \"{{ {'a': {'b': 1}} | merge(_.exec('x')) }}\"");
         assert!(errs[0].contains("is not available"), "{errs:?}");
     }
 
@@ -1904,7 +1912,7 @@ mod tests {
         for (text, default) in [
             ("[demo]\nenabled = false", false),
             (
-                "[demo]\nenabled = false\nresult = \"{{ merge(sources) }}\"",
+                "[demo]\nenabled = false\nresult = \"{{ _.merge(sources) }}\"",
                 false,
             ),
             ("[demo]\nenabled = true", true),
@@ -1922,7 +1930,7 @@ mod tests {
 
     #[test]
     fn sources_is_not_a_name_a_return_sees() {
-        let errs = errors("[demo]\nreturn = \"{{ merge(sources) }}\"");
+        let errs = errors("[demo]\nreturn = \"{{ _.merge(sources) }}\"");
         assert!(
             errs.len() == 1 && errs[0].contains("unknown name 'sources'"),
             "{errs:?}"
@@ -1937,10 +1945,10 @@ mod tests {
                 errs.iter().any(|e| e.starts_with(&format!(
                     "[daemon.providers._] {key}: sources.head(): the abstract provider applies to \
                      every provider"
-                )) && e.ends_with("use merge(sources)")),
+                )) && e.ends_with("use _.merge(sources)")),
                 "{key}: {errs:?}"
             );
         }
-        assert!(errors("[_]\nresult = \"{{ merge(sources) }}\"").is_empty());
+        assert!(errors("[_]\nresult = \"{{ _.merge(sources) }}\"").is_empty());
     }
 }

@@ -113,7 +113,7 @@ default.
 | `WithTimeoutMs(ms uint64)` | 250 | How long one read or write on the socket may take. 0 is refused (`parse_error` on the first call). |
 | `WithConnectTimeoutMs(ms uint64)` | 1500 | How long connecting keeps retrying a socket nobody answers yet; 0 is a single attempt. |
 | `WithAutostart(enabled bool)` | on | Start a daemon when none serves the auto-discovered socket. |
-| `WithExec(enabled bool)` | off | Whether a template this client renders may call `exec()`. |
+| `WithExec(enabled bool)` | off | Whether a template this client renders may call `_.exec()`. |
 
 ```go
 c, err := beachcomber.NewClient(
@@ -176,7 +176,7 @@ branch, err = client.Get("git.branch", "/path/to/repo", nil, beachcomber.Force, 
 tags — the former keeps the expression's natural type, the latter is
 always a string (a source with no tags at all is its literal text).
 
-`exec()` inside a template runs only on a client constructed with
+`_.exec()` inside a template runs only on a client constructed with
 `beachcomber.WithExec(true)`; it is off by default, and a template that
 calls it then fails with `exec() is disabled in this context`.
 

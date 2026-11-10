@@ -11,7 +11,7 @@
 //! no configuration: every input arrives in [`Inputs`] and every daemon
 //! answer through a [`Fetch`] the caller supplies. So the whole of it is
 //! testable against a map, and a surface decides once — at its edge — what
-//! the environment, the directory and the `exec()` capability are.
+//! the environment, the directory and the `_.exec()` capability are.
 //!
 //! A miss and a failure are different answers: `Ok(None)` is "nothing is
 //! stored at that address", `Err` is "something is wrong".
@@ -82,9 +82,9 @@ pub struct Inputs<'a> {
     pub force: bool,
     /// How long each fetch waits for a run it needs ([`Wait`]).
     pub wait: Wait,
-    /// Whether an evaluated template may call `exec()`.
+    /// Whether an evaluated template may call `_.exec()`.
     pub allow_exec: bool,
-    /// The clock `now()`, `ago` and `spinner` read: one value for the whole
+    /// The clock `_.now()`, `ago` and `spinner` read: one value for the whole
     /// resolution. Each surface sets it; a test fixes it.
     pub now: std::time::SystemTime,
 }
@@ -202,7 +202,7 @@ pub enum ResolveError {
     /// A template that does not compile, a cycle, or the depth limit — the
     /// message names the field, and someone has to go and edit it.
     Config(String),
-    /// A failed or disabled `exec()`, or any other render-time failure.
+    /// A failed or disabled `_.exec()`, or any other render-time failure.
     Runtime(String),
     /// The daemon could not be asked, or refused the key being resolved.
     Fetch(FetchError),
@@ -268,7 +268,7 @@ pub struct Traced {
     pub deps: Fetched,
     /// The age of the oldest cached value it used: a ref's data, or the data
     /// it answered with. `None` when it used none — a template over `env`,
-    /// `exec()` or literals alone is computed now. A rendered value has no
+    /// `_.exec()` or literals alone is computed now. A rendered value has no
     /// age of its own; it is as old as the oldest input behind it, and a
     /// value served from a memo is at least as old as the memo.
     pub oldest_input_ms: Option<u128>,
@@ -328,7 +328,7 @@ pub fn eval(
 /// named `name`. A name `locals` binds is never fetched as a provider:
 /// `comb get -f '{{ value }}' git.branch` renders the value it read, and
 /// `comb status -f '{{ provider }}'` the row's provider, while every other
-/// name — `env`, `comb`, a provider ref, `exec()` — reads as it does in any
+/// name — `env`, `comb`, a provider ref, `_.exec()` — reads as it does in any
 /// template.
 ///
 /// The source is stored nowhere, so its own `cache()`, `watch()` and `ttl()`
@@ -372,7 +372,7 @@ struct Resolver<'a> {
     /// renders nothing never pays for it ([`Self::jinja`]).
     jinja: OnceCell<Arc<Probe<'static>>>,
     /// What every render of this resolution runs with ([`with_ctx`]): the
-    /// caller's `env` and directory, the only ones an `exec()` child sees,
+    /// caller's `env` and directory, the only ones an `_.exec()` child sees,
     /// and the memo frames. Made on the first render too ([`Self::ctx`]).
     ctx: OnceCell<Arc<EngineCtx>>,
     /// The macro libraries read so far ([`Self::closure`]).

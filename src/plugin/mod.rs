@@ -4,8 +4,8 @@
 //! library exports, and [`StaticLibrary`] is the [`LoadedLibrary`] over it: a
 //! call finds the symbol in the table where a library's is found by `dlsym`,
 //! and goes on down the one path every plugin call takes
-//! ([`call_symbol`]). So `plugin('sys', 'hostname')` runs what a user's
-//! `plugin('mine', 'f')` runs, from the engine function to the C call.
+//! ([`call_symbol`]). So `_.plugin('sys', 'hostname')` runs what a user's
+//! `_.plugin('mine', 'f')` runs, from the engine function to the C call.
 //!
 //! An answer is written into a thread-local string of its symbol's and its
 //! pointer returned: valid until the next call of the same symbol on the same

@@ -237,7 +237,7 @@ class Client:
         autostart: Whether to attempt starting the daemon if it isn't
             running. ``None`` is the library's default (on).
         exec: Whether a template this client renders (:meth:`get`,
-            :meth:`eval`) may call ``exec()``. ``None`` is the library's
+            :meth:`eval`) may call ``_.exec()``. ``None`` is the library's
             default, off: a template that calls it then fails with
             ``exec() is disabled in this context``.
 

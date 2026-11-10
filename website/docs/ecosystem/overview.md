@@ -54,7 +54,7 @@ follow the language's casing (`set_context`, `setContext`, `SetContext`).
 | Watch stream | `next_event`, `cancel`, `close` |
 
 A client takes `socket_path`, `timeout_ms`, `connect_timeout_ms`, `autostart` and `exec`; any left out takes the
-library's default. `exec` is off by default, so a template that calls `exec()` fails on a client unless you turn it
+library's default. `exec` is off by default, so a template that calls `_.exec()` fails on a client unless you turn it
 on ([why](./how-the-libraries-work.md#exec-is-off-on-a-client)). `get` answers the value `comb get` prints, and null
 on a miss. Each failure is one error type per kind (`daemon_not_running`, `timeout`, `server_error`, …), carrying the
 kind, the library's message and the library's version.

@@ -51,7 +51,7 @@ client = Beachcomber::Client.new(socket_path: '/custom/path', timeout_ms: 500, c
 | `timeout_ms:` | 250 | How long one read or write on the socket may take; at least 1. |
 | `connect_timeout_ms:` | 1500 | How long connecting keeps retrying before it gives up; 0 is one attempt. |
 | `autostart:` | on | Start a daemon when none answers an auto-discovered socket. |
-| `exec:` | off | Whether a template this client renders may call `exec()`. |
+| `exec:` | off | Whether a template this client renders may call `_.exec()`. |
 
 The defaults are the library's (`bc_client_new`): this SDK passes on the
 options you give and adds none of its own.
@@ -92,7 +92,7 @@ literal text/several tags — the former keeps the expression's natural type,
 the latter is always a string (a source with no tags at all is its literal
 text).
 
-`exec()` inside a template runs only on a client created with
+`_.exec()` inside a template runs only on a client created with
 `Beachcomber::Client.new(exec: true)`; it is off by default, and a
 template that calls it then fails with `exec() is disabled in this
 context`.

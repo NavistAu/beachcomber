@@ -177,7 +177,7 @@ module Beachcomber
     #   autostarts when the socket path is auto-discovered — never for an
     #   explicit socket_path.
     # @param exec [Boolean, nil] whether a template this client renders
-    #   ({#get}, {#eval}) may call +exec()+; nil is the library's default
+    #   ({#get}, {#eval}) may call +_.exec()+; nil is the library's default
     #   (off), and a template that calls it then fails with
     #   "exec() is disabled in this context".
     def initialize(socket_path: nil, timeout_ms: nil, connect_timeout_ms: nil, autostart: nil, exec: nil)

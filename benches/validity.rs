@@ -61,7 +61,7 @@ const WATCHED: [&str; 8] = ["f0", "f1", "f2", "f3", "f4", "f5", "f6", "f7"];
 fn rooted(name: &str, marker: &str, ret: &str) -> String {
     format!(
         "[daemon.providers.{name}.sources.s]\n\
-         root = \"{{{{ lup('{marker}') | dirname }}}}\"\n\
+         root = \"{{{{ _.lup('{marker}') | dirname }}}}\"\n\
          data = \"{{{{ 1 }}}}\"\n\
          result.n = \"{{{{ data }}}}\"\n\
          return = \"{{{{ result | {ret} }}}}\"\n"
@@ -491,7 +491,7 @@ fn second_get_after_cold() {
     let fixture = Fixture::new();
     let ms = |d: Duration| d.as_secs_f64() * 1000.0;
     println!(
-        "second_get_after_cold: p9.n (root = lup(...), watch('state.json')), {FRESH_DAEMONS} fresh daemons"
+        "second_get_after_cold: p9.n (root = _.lup(...), watch('state.json')), {FRESH_DAEMONS} fresh daemons"
     );
     println!(
         "  daemon   cold get   2nd get   3rd get   then introspect watches (asks the scheduler loop)"
@@ -555,7 +555,7 @@ fn budget_accuracy() {
     let sock = dir.path().join("s");
     let layer: toml::Value = toml::from_str(
         "[daemon.providers.slow.sources.s]\n\
-         data = \"{{ exec('sleep 0.3; echo 1') | trim }}\"\n\
+         data = \"{{ _.exec('sleep 0.3; echo 1') | trim }}\"\n\
          result.v = \"{{ data }}\"\n\
          return = \"{{ result | poll('1s') }}\"\n",
     )

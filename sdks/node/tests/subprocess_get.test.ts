@@ -72,7 +72,7 @@ describe('subprocess transport get against a real daemon', { skip }, () => {
       {
         bad: '{{ bad.bad }}',
         cyc: '{{ bad.cyc }}',
-        ex: '{{ exec("definitely-missing-cmd-4f2a") }}',
+        ex: '{{ _.exec("definitely-missing-cmd-4f2a") }}',
         grp: { leaf: '{{ bad.grp.leaf }}' },
       },
       '/tmp',
@@ -208,7 +208,7 @@ describe('subprocess transport get against a real daemon', { skip }, () => {
   });
 
   it("an exec child sees the map's variables", async () => {
-    await put('mapexec:template', { v: '{{ exec(\'echo "$MARK"\') | trim }}' }, '/tmp');
+    await put('mapexec:template', { v: '{{ _.exec(\'echo "$MARK"\') | trim }}' }, '/tmp');
     const execHandle = tp.newClient({ socketPath: daemon.sockPath, timeoutMs: 5000, exec: true });
     try {
       const map = JSON.stringify({ MARK: 'from-map', PATH: '/usr/bin:/bin' });
@@ -220,7 +220,7 @@ describe('subprocess transport get against a real daemon', { skip }, () => {
   });
 
   it('with exec off the call fails with exec() is disabled', async () => {
-    await put('noexec:template', { v: "{{ exec('echo hi') }}" }, '/tmp');
+    await put('noexec:template', { v: "{{ _.exec('echo hi') }}" }, '/tmp');
     await assert.rejects(
       () => get('noexec.v', '/tmp'),
       (err: unknown) => err instanceof ServerError && /exec\(\) is disabled/.test(err.message),
@@ -296,7 +296,7 @@ describe('subprocess transport get against a real daemon', { skip }, () => {
     );
   });
 
-  it("a failed exec() is a ServerError, never a transport kind", async () => {
+  it("a failed _.exec() is a ServerError, never a transport kind", async () => {
     // The CLI's message names a missing file; that must not read as the
     // daemon being unreachable — the daemon answered.
     const execHandle = tp.newClient({ socketPath: daemon.sockPath, timeoutMs: 5000, exec: true });

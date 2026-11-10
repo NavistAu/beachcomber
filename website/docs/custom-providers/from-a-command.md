@@ -29,7 +29,7 @@ Declare a Source for it:
 ```toml
 # ~/.config/beachcomber/conf.d/docker.toml
 [daemon.providers.docker_ctx.sources.main]
-data = "{{ exec('~/.config/beachcomber/providers/docker-context.sh') | fromjson }}"
+data = "{{ _.exec('~/.config/beachcomber/providers/docker-context.sh') | fromjson }}"
 result = "{{ data }}"
 return = "{{ result | poll('30s') }}"
 ```
@@ -61,7 +61,7 @@ The first read runs the script and waits for it. Every read after that is answer
 
 ## Shaping the output
 
-The filter after `exec()` decides how stdout is read, and the `result` lines pick the fields.
+The filter after `_.exec()` decides how stdout is read, and the `result` lines pick the fields.
 
 **JSON.** `| fromjson`, then `result = "{{ data }}"` for every key, or `result.<field>` lines for some of them.
 
@@ -69,7 +69,7 @@ The filter after `exec()` decides how stdout is read, and the `result` lines pic
 
 ```toml
 [daemon.providers.kv.sources.main]
-data = "{{ exec('printf \"name=demo\\nversion=1.2.3\\n\"') | fromini }}"
+data = "{{ _.exec('printf \"name=demo\\nversion=1.2.3\\n\"') | fromini }}"
 result.name = "{{ data[''].name }}"
 result.version = "{{ data[''].version }}"
 ```
@@ -87,12 +87,12 @@ comb get kv -f json
 
 INI values are strings. Convert one with a filter: `"{{ data[''].count | int }}"`.
 
-**One value.** `exec()` already strips one trailing newline; `| trim` strips the rest of the whitespace. Name the field
+**One value.** `_.exec()` already strips one trailing newline; `| trim` strips the rest of the whitespace. Name the field
 with a `result.<field>` line:
 
 ```toml
 [daemon.providers.greeting.sources.main]
-data = "{{ exec(['echo', 'hello=world', 'lang=en']) }}"
+data = "{{ _.exec(['echo', 'hello=world', 'lang=en']) }}"
 result.text = "{{ data }}"
 ```
 
@@ -106,13 +106,13 @@ hello=world lang=en
 
 ## Running the command
 
-- A **string** runs under `sh -c`, so pipes and `~` work: `exec('ls | wc -l')`.
-- A **list** is the argument vector with no shell: `exec(['echo', 'hello=world'])`. Each element is one argument and
+- A **string** runs under `sh -c`, so pipes and `~` work: `_.exec('ls | wc -l')`.
+- A **list** is the argument vector with no shell: `_.exec(['echo', 'hello=world'])`. Each element is one argument and
   nothing in it is expanded.
 - The command's environment is the daemon's, including the [env file](./from-an-http-api.md#keep-secrets-in-the-env-file).
-  Write a variable into the line (`exec('tool --region ' ~ env.REGION)`) rather than as `$REGION` in the string, so the
+  Write a variable into the line (`_.exec('tool --region ' ~ env.REGION)`) rather than as `$REGION` in the string, so the
   value the command gets is visible in the line.
-- `timeout=` cuts the command off (default `'10s'`): `exec('slow-tool', timeout='30s')`.
+- `timeout=` cuts the command off (default `'10s'`): `_.exec('slow-tool', timeout='30s')`.
 - A Source with a `root` runs its command in that directory (below).
 
 ## Choosing a schedule
@@ -136,13 +136,13 @@ Source backs off and is eventually evicted; the next read runs it again.
 
 ## One instance per project
 
-A `root` line gives the Source one instance per directory it finds. `lup(name)` finds the nearest `name` at or above
+A `root` line gives the Source one instance per directory it finds. `_.lup(name)` finds the nearest `name` at or above
 the directory being read:
 
 ```toml
 [daemon.providers.todo.sources.main]
-root = "{{ lup('.git') | dirname }}"
-data = '''{{ exec('git ls-files --others --exclude-standard | wc -l', timeout='2s')
+root = "{{ _.lup('.git') | dirname }}"
+data = '''{{ _.exec('git ls-files --others --exclude-standard | wc -l', timeout='2s')
   | trim
   | int }}'''
 result.untracked = "{{ data }}"
@@ -178,12 +178,12 @@ WARN beachcomber::run: Source 'flaky.main' failed: flaky.main: data: `sh -c 'cat
 After repeated failures the Source backs off. `failback(interval, count)` on `return` sets how: after `count` failures in
 a row, retries are spaced from `interval`, doubling. A command that succeeds has its stderr dropped.
 
-A line that fails with `log.fatal(msg)` instead stops the Source: nothing runs it again until a file it read changes, the
+A line that fails with `_.log.fatal(msg)` instead stops the Source: nothing runs it again until a file it read changes, the
 configuration reloads, or `comb refresh` / `comb get --force` asks. See
 [the template library](../reference/template-library.md).
 
 ## Keep it fast
 
-Each run of `exec()` starts a process, which costs milliseconds. For a value that lives in a file, read the file instead
-([From files](./from-files.md)); for an HTTP API, use `url()` ([From an HTTP API](./from-an-http-api.md)). Poll a command
+Each run of `_.exec()` starts a process, which costs milliseconds. For a value that lives in a file, read the file instead
+([From files](./from-files.md)); for an HTTP API, use `_.url()` ([From an HTTP API](./from-an-http-api.md)). Poll a command
 no faster than its value changes.

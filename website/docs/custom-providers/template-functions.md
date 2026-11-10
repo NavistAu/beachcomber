@@ -33,11 +33,11 @@ a file, and `fromjson`, `fromtoml`, `fromyaml` and `fromini` turn its text into 
 
 ```shell-session
 $ cd ~/code/shop/web
-$ comb eval "{{ lup('package.json') }}"
+$ comb eval "{{ _.lup('package.json') }}"
 /home/you/code/shop/package.json
-$ comb eval "{{ (lup('package.json') | read | fromjson).version }}"
+$ comb eval "{{ (_.lup('package.json') | read | fromjson).version }}"
 1.5.0
-$ comb eval "{{ lup('package.json') | dirname | basename }}"
+$ comb eval "{{ _.lup('package.json') | dirname | basename }}"
 shop
 ```
 
@@ -50,9 +50,9 @@ reading it.
 with no shell involved:
 
 ```shell-session
-$ comb eval "{{ exec('uname -s') | trim }}"
+$ comb eval "{{ _.exec('uname -s') | trim }}"
 Darwin
-$ comb eval "{{ exec(['echo', 'hi']) | trim }}"
+$ comb eval "{{ _.exec(['echo', 'hi']) | trim }}"
 hi
 ```
 
@@ -92,9 +92,9 @@ The colour depth follows your terminal (`COLORTERM`, then `TERM`), and `--color 
 ```shell-session
 $ comb eval "{{ 3725 | duration }}"
 1h2m
-$ comb eval "{{ (now() - 11520) | ago }}"
+$ comb eval "{{ (_.now() - 11520) | ago }}"
 3h12m ago
-$ comb eval "{{ now() | strftime('%H:%M') }}"
+$ comb eval "{{ _.now() | strftime('%H:%M') }}"
 09:41
 $ comb eval "{{ 1288490188 | bytes }} {{ 56789 | compact }}"
 1.2G 57k
@@ -132,14 +132,14 @@ other text is an error. A missing value stays missing.
 kind of file. You need a Nerd Font in your terminal to see them:
 
 ```text
-{{ icon('dev-git') }} {{ git.branch }}
-{{ file_icon('package.json') }} {{ pkg.version }}
+{{ _.icon('dev-git') }} {{ git.branch }}
+{{ _.file_icon('package.json') }} {{ pkg.version }}
 ```
 
 `bar` draws a fixed-width bar, for things like a battery or disk usage:
 
 ```text
-{{ bar(10, {'value': battery.percent / 100, 'colour': 'green'}) }}
+{{ _.bar(10, {'value': battery.percent / 100, 'colour': 'green'}) }}
 ```
 
 ## When a value is missing

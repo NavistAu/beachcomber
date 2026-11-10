@@ -1,4 +1,4 @@
-//! Spawn engine backing the `exec()` and `execa()` jinja functions, registered
+//! Spawn engine backing the `_.exec()` and `_.execa()` jinja functions, registered
 //! in `engine::engine_env`.
 //!
 //! [`run`] spawns one argv command in its own process group, writes+closes
@@ -24,7 +24,7 @@
 //!   The child is spawned in its own process group
 //!   (`CommandExt::process_group(0)`), and this function kills the whole
 //!   group (`libc::killpg`, SIGKILL) once the primary child is done —
-//!   **on every outcome, including a clean exit**: an `exec()` call on a
+//!   **on every outcome, including a clean exit**: an `_.exec()` call on a
 //!   statusline render path has no legitimate reason to leave a daemon
 //!   child running past its own return, so this module doesn't try to
 //!   support that. Even so, a reader thread's final receive is bounded by
@@ -111,7 +111,7 @@ pub(crate) struct Ran {
     pub stderr: String,
 }
 
-/// [`run_with`] where only a zero exit is accepted: `exec()`. Returns stdout.
+/// [`run_with`] where only a zero exit is accepted: `_.exec()`. Returns stdout.
 pub(crate) fn run(req: &ExecRequest) -> Result<String, String> {
     run_with(req, ExitStatus::success).map(|ran| ran.stdout)
 }

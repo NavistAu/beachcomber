@@ -11,14 +11,14 @@
 use crate::common::daemon::TestDaemon;
 use std::path::Path;
 
-/// `comb eval '{{ exec("echo hi") }}'` runs the command and
+/// `comb eval '{{ _.exec("echo hi") }}'` runs the command and
 /// prints its output.
 #[test]
 fn eval_of_exec_call_prints_command_output() {
     let d = TestDaemon::serve();
 
     d.comb(Path::new("/"))
-        .args(["eval", r#"{{ exec("echo hi") }}"#])
+        .args(["eval", r#"{{ _.exec("echo hi") }}"#])
         .assert()
         .success()
         .stdout(predicates::str::diff("hi"));
@@ -31,7 +31,7 @@ fn get_of_template_with_exec_prints_command_output() {
     let d = TestDaemon::serve();
 
     d.comb(Path::new("/"))
-        .args(["put", "demo:template.shout", r#""{{ exec('echo ok') }}""#])
+        .args(["put", "demo:template.shout", r#""{{ _.exec('echo ok') }}""#])
         .assert()
         .success();
 
@@ -67,7 +67,7 @@ fn get_of_exec_or_cache_cascade_spawns_command_exactly_once() {
             "put",
             "demo:template.shout",
             &format!(
-                "\"{{{{ exec(\\\"{}\\\") or comb.otherprov.otherfield }}}}\"",
+                "\"{{{{ _.exec(\\\"{}\\\") or comb.otherprov.otherfield }}}}\"",
                 script.display()
             ),
         ])
@@ -90,7 +90,7 @@ fn get_of_exec_or_cache_cascade_spawns_command_exactly_once() {
     let spawn_count = logged.lines().count();
     assert_eq!(
         spawn_count, 1,
-        "exec()-backed template must spawn exactly once per `comb get`; \
+        "_.exec()-backed template must spawn exactly once per `comb get`; \
          counter file contents: {logged:?}"
     );
 }
@@ -103,7 +103,7 @@ const DISABLED: &str = "exec() is disabled in this context";
 fn no_exec_get_of_an_exec_template_fails() {
     let d = TestDaemon::serve();
     d.comb(Path::new("/"))
-        .args(["put", "demo:template.shout", r#""{{ exec('echo ok') }}""#])
+        .args(["put", "demo:template.shout", r#""{{ _.exec('echo ok') }}""#])
         .assert()
         .success();
 
@@ -119,7 +119,7 @@ fn no_exec_get_of_an_exec_template_fails() {
 fn no_exec_eval_fails() {
     let d = TestDaemon::serve();
     d.comb(Path::new("/"))
-        .args(["--no-exec", "eval", r#"{{ exec("echo hi") }}"#])
+        .args(["--no-exec", "eval", r#"{{ _.exec("echo hi") }}"#])
         .assert()
         .failure()
         .stderr(predicates::str::contains(DISABLED));
@@ -131,7 +131,7 @@ fn no_exec_eval_fails() {
 fn no_exec_watch_fails() {
     let d = TestDaemon::serve();
     d.comb(Path::new("/"))
-        .args(["put", "demo:template.shout", r#""{{ exec('echo ok') }}""#])
+        .args(["put", "demo:template.shout", r#""{{ _.exec('echo ok') }}""#])
         .assert()
         .success();
 
@@ -149,7 +149,7 @@ fn no_exec_watch_fails() {
 fn no_exec_status_row_renders_as_failed() {
     let d = TestDaemon::serve();
     d.comb(Path::new("/"))
-        .args(["put", "demo:template.shout", r#""{{ exec('echo ok') }}""#])
+        .args(["put", "demo:template.shout", r#""{{ _.exec('echo ok') }}""#])
         .assert()
         .success();
 
@@ -177,7 +177,7 @@ fn comb_eval_exec_sees_the_cli_process_env() {
 
     d.comb(Path::new("/"))
         .env("FOO", "x")
-        .args(["eval", r#"{{ exec('echo $FOO') ~ env.FOO }}"#])
+        .args(["eval", r#"{{ _.exec('echo $FOO') ~ env.FOO }}"#])
         .assert()
         .success()
         .stdout(predicates::str::diff("xx"));

@@ -441,8 +441,8 @@ mod tests {
         let j = eval_json;
         let want = r#"{"x":{"p":1,"q":3,"r":4},"y":{"n":1},"z":[2]}"#;
         assert_eq!(j(&format!("({a}) | merge({b})")), want);
-        assert_eq!(j(&format!("merge({a}, {b})")), want);
-        assert_eq!(j(&format!("merge([{a}, {b}])")), want);
+        assert_eq!(j(&format!("_.merge({a}, {b})")), want);
+        assert_eq!(j(&format!("_.merge([{a}, {b}])")), want);
         assert_eq!(
             j(&format!("({a}) | merge({{'x': {{'p': none}}, 'y': none}})")),
             r#"{"x":{"q":2},"z":[1]}"#

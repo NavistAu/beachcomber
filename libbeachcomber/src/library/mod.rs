@@ -31,8 +31,10 @@ pub mod style;
 pub mod time;
 
 use crate::engine::op_error;
-use minijinja::value::{Kwargs, Rest, Value as MjValue};
-use minijinja::{Environment, Error};
+use minijinja::value::{Enumerator, Kwargs, Object, ObjectRepr, Rest, Value as MjValue};
+use minijinja::{Environment, Error, State};
+use std::collections::BTreeMap;
+use std::sync::Arc;
 
 /// What an item reads, and so where it may run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -193,6 +195,97 @@ pub(crate) fn install(env: &mut Environment<'_>, tier: Tier) {
     }
 }
 
+/// Every item called as a function, reached through `_` only: `_.lup(...)`,
+/// `_.log.warn(...)`. A bare name in a template is a provider; a filter form
+/// (`| exec`, `| merge`) stays bare, filters having names of their own.
+pub fn functions() -> impl Iterator<Item = &'static Item> {
+    ITEMS.iter().filter(|i| i.form != Form::Filter)
+}
+
+/// The `_` global: the library's functions, by name, and on a line whose
+/// context says more of itself (`_.name`), that too. A method call runs the
+/// function of that name.
+#[derive(Debug, Clone, Default)]
+pub struct Underscore {
+    functions: Arc<BTreeMap<String, MjValue>>,
+    own: BTreeMap<String, MjValue>,
+}
+
+impl Object for Underscore {
+    fn repr(self: &Arc<Self>) -> ObjectRepr {
+        ObjectRepr::Map
+    }
+
+    fn get_value(self: &Arc<Self>, key: &MjValue) -> Option<MjValue> {
+        let key = key.as_str()?;
+        self.own
+            .get(key)
+            .or_else(|| self.functions.get(key))
+            .cloned()
+    }
+
+    fn enumerate(self: &Arc<Self>) -> Enumerator {
+        let keys: Vec<MjValue> = self
+            .own
+            .keys()
+            .chain(self.functions.keys())
+            .map(|k| MjValue::from(k.as_str()))
+            .collect();
+        Enumerator::Values(keys)
+    }
+
+    fn call_method(
+        self: &Arc<Self>,
+        state: &mut State<'_, '_>,
+        method: &str,
+        args: &[MjValue],
+    ) -> Result<MjValue, Error> {
+        match self.functions.get(method) {
+            Some(function) => function.call(state, args),
+            None => Err(op_error(format!("_.{method} is unknown"))),
+        }
+    }
+}
+
+/// Move each function `env` holds as a bare global under its `_`, which is
+/// made when there is none. A builder calls it after installing, and again
+/// after it adds or replaces one (the daemon's `url`, a provider's `merge`).
+pub fn gather(env: &mut Environment<'_>) {
+    let mut gathered = underscore_of(env)
+        .map(|u| (*u.functions).clone())
+        .unwrap_or_default();
+    for item in functions() {
+        let found = env.globals().find(|(n, _)| *n == item.name).map(|(_, v)| v);
+        if let Some(value) = found {
+            env.remove_global(item.name);
+            gathered.insert(item.name.to_string(), value);
+        }
+    }
+    env.add_global(
+        "_",
+        MjValue::from_object(Underscore {
+            functions: Arc::new(gathered),
+            own: BTreeMap::new(),
+        }),
+    );
+}
+
+fn underscore_of(env: &Environment<'_>) -> Option<Underscore> {
+    let (_, value) = env.globals().find(|(n, _)| *n == "_")?;
+    value.downcast_object_ref::<Underscore>().cloned()
+}
+
+/// `env`'s `_` with `own` besides: a line's context binds it as `_`, which
+/// hides the global, so it carries the functions too.
+pub fn underscore_with(env: &Environment<'_>, own: &[(&str, MjValue)]) -> MjValue {
+    let mut u = underscore_of(env).unwrap_or_default();
+    u.own = own
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.clone()))
+        .collect();
+    MjValue::from_object(u)
+}
+
 /// The first item `used` reports a use of that `surface` may not call.
 pub fn first_refused(surface: Surface, used: impl Fn(&str) -> bool) -> Option<&'static Item> {
     ITEMS
@@ -206,7 +299,7 @@ fn add_url_refusal(env: &mut Environment<'_>) {
     env.add_function(
         "url",
         |_: Rest<MjValue>, _: Kwargs| -> Result<MjValue, Error> {
-            Err(op_error("url() runs only in a Source's lines"))
+            Err(op_error("_.url() runs only in a Source's lines"))
         },
     );
 }
@@ -215,7 +308,7 @@ fn add_plugin_refusal(env: &mut Environment<'_>) {
     env.add_function(
         "plugin",
         |_: Rest<MjValue>, _: Kwargs| -> Result<MjValue, Error> {
-            Err(op_error("plugin() runs only in a Source's lines"))
+            Err(op_error("_.plugin() runs only in a Source's lines"))
         },
     );
 }
@@ -369,8 +462,13 @@ mod tests {
             .map_or_else(|e| e.kind() != ErrorKind::UnknownFilter, |_| true)
     }
 
+    /// Whether `env`'s `_` has `name`; no function is a bare global.
     fn has_function(env: &Environment<'_>, name: &str) -> bool {
-        env.globals().any(|(n, _)| n == name)
+        assert!(!env.globals().any(|(n, _)| n == name), "{name} is bare");
+        env.globals()
+            .find(|(n, _)| *n == "_")
+            .and_then(|(_, u)| u.get_attr(name).ok())
+            .is_some_and(|f| !f.is_undefined())
     }
 
     fn present(env: &Environment<'_>, item: &Item) -> bool {
@@ -414,13 +512,13 @@ mod tests {
                     assert!(!item.tier.available(Surface::Client));
                     assert!(item.tier.available(Surface::Source), "{}", item.name);
                     let err = client
-                        .compile_expression(&format!("{}()", item.name))
+                        .compile_expression(&format!("_.{}()", item.name))
                         .unwrap()
                         .eval(())
                         .unwrap_err()
                         .to_string();
                     assert!(
-                        err.contains(&format!("{}() runs only in a Source's lines", item.name)),
+                        err.contains(&format!("_.{}() runs only in a Source's lines", item.name)),
                         "{err}"
                     );
                 }
@@ -478,8 +576,8 @@ mod tests {
             ("hash", "'x' | hash('nope')"),
             ("b64encode", "[1] | b64encode"),
             ("b64decode", "'!' | b64decode"),
-            ("spark", "spark(5)"),
-            ("icon", "icon('nope')"),
+            ("spark", "_.spark(5)"),
+            ("icon", "_.icon('nope')"),
             ("ramp", "1 | ramp([2, 1], [1, 2, 3])"),
             ("pct", "'x' | pct"),
             ("compact", "'x' | compact"),
@@ -491,10 +589,10 @@ mod tests {
             ("fromjson", "'{' | fromjson"),
             ("fromini", "[1] | fromini"),
             ("read", "[1] | read"),
-            ("lup", "lup('x', files=true, dirs=true)"),
-            ("bar", "bar(-1)"),
-            ("exec", "exec(1)"),
-            ("execa", "execa(1)"),
+            ("lup", "_.lup('x', files=true, dirs=true)"),
+            ("bar", "_.bar(-1)"),
+            ("exec", "_.exec(1)"),
+            ("execa", "_.execa(1)"),
             ("cache", "1 | cache"),
             ("watch", "1 | watch"),
             ("ttl", "1 | ttl"),

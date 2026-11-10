@@ -389,7 +389,7 @@ fn render_template_has_no_exec() {
     // With `exec()` off, a call fails at the call site with the on-topic
     // message — not minijinja's "unknown function", indistinguishable from a
     // typo.
-    let err = render_template("{{ exec(['printf', 'x']) }}", &json!({})).unwrap_err();
+    let err = render_template("{{ _.exec(['printf', 'x']) }}", &json!({})).unwrap_err();
     assert!(err.contains(": expression eval error:"), "got: {err}");
     assert!(
         err.contains("exec() is disabled in this context"),

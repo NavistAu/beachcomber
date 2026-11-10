@@ -30,7 +30,137 @@ pub struct Migration {
 
 /// Every migration, in order: the first takes schema 1 to 2, the next 2 to 3.
 /// None is ever removed.
-pub static MIGRATIONS: &[Migration] = &[];
+pub static MIGRATIONS: &[Migration] = &[
+    // 1 → 2: comb's functions are called through `_` (`lup()` is `_.lup()`).
+    Migration {
+        file: |text| templates_in_file(text, underscore_calls),
+        template: |text| splice(text, &underscore_calls(text)),
+    },
+];
+
+/// Schema 1 to 2 of one template: where each bare call of a library function
+/// starts ([`libbeachcomber::eval::bare_calls`]), for `_.` to go in front.
+/// Filters, strings, comments, a name already after a `.` and a name the
+/// template declares itself are not calls of comb's.
+fn underscore_calls(text: &str) -> Vec<usize> {
+    libbeachcomber::eval::bare_calls(&libbeachcomber::engine::engine_env(), text)
+        .into_iter()
+        .map(|(at, _)| at)
+        .collect()
+}
+
+/// `text` with `_.` inserted at each of `at`, offsets into `text`.
+fn splice(text: &str, at: &[usize]) -> String {
+    let mut out = text.to_string();
+    let mut at = at.to_vec();
+    at.sort_unstable();
+    for &i in at.iter().rev() {
+        out.insert_str(i, "_.");
+    }
+    out
+}
+
+/// `text`, a config file, with `_.` inserted where `calls` says in each
+/// string in it that holds a tag (`{{` or `{%`): every template comb reads
+/// from a config file, whatever its key. `calls` reads the string's value;
+/// the `_.` goes in at the same place of the string as the file writes it,
+/// so its quoting, its escapes and everything around it are kept.
+fn templates_in_file(text: &str, calls: fn(&str) -> Vec<usize>) -> Result<String, String> {
+    use toml::Spanned;
+    use toml::de::{DeTable, DeValue};
+    fn walk<'a>(value: &'a Spanned<DeValue<'a>>, out: &mut Vec<&'a Spanned<DeValue<'a>>>) {
+        match value.get_ref() {
+            DeValue::String(_) => out.push(value),
+            DeValue::Array(items) => items.iter().for_each(|v| walk(v, out)),
+            DeValue::Table(table) => table.values().for_each(|v| walk(v, out)),
+            _ => {}
+        }
+    }
+    let doc = DeTable::parse(text).map_err(|e| e.to_string())?;
+    let mut strings = Vec::new();
+    doc.get_ref().values().for_each(|v| walk(v, &mut strings));
+    let mut at = Vec::new();
+    for string in strings {
+        let DeValue::String(value) = string.get_ref() else {
+            continue;
+        };
+        if !(value.contains("{{") || value.contains("{%")) {
+            continue;
+        }
+        let span = string.span();
+        let offsets = toml_string(&text[span.clone()])
+            .filter(|(read, _)| read == value.as_ref())
+            .map(|(_, offsets)| offsets)
+            .ok_or_else(|| format!("could not read the string at byte {}", span.start))?;
+        at.extend(calls(value).into_iter().map(|i| span.start + offsets[i]));
+    }
+    Ok(splice(text, &at))
+}
+
+/// A TOML string literal as a file writes it, read: its value, and for each
+/// byte of the value the offset in `raw` it is written at (an escape's bytes
+/// are all at its backslash). `None` when `raw` is no string literal.
+fn toml_string(raw: &str) -> Option<(String, Vec<usize>)> {
+    let (quote, open) = if raw.starts_with("\"\"\"") {
+        ('"', 3)
+    } else if raw.starts_with("'''") {
+        ('\'', 3)
+    } else {
+        (raw.chars().next().filter(|c| matches!(c, '"' | '\''))?, 1)
+    };
+    let multi = open == 3;
+    let body = raw.get(open..raw.len().checked_sub(open)?)?;
+    // A newline right after a multi-line string's opening quotes is not its
+    // value's.
+    let skip = match body {
+        b if multi && b.starts_with("\r\n") => 2,
+        b if multi && b.starts_with('\n') => 1,
+        _ => 0,
+    };
+    let (mut value, mut offsets) = (String::new(), Vec::new());
+    let mut chars = body
+        .char_indices()
+        .skip_while(|(i, _)| *i < skip)
+        .peekable();
+    while let Some((at, c)) = chars.next() {
+        let decoded = if c != '\\' || quote == '\'' {
+            c
+        } else {
+            let (_, e) = chars.next()?;
+            let mut hex = |n: usize| {
+                let digits: String = (0..n)
+                    .filter_map(|_| chars.next().map(|(_, c)| c))
+                    .collect();
+                u32::from_str_radix(&digits, 16)
+                    .ok()
+                    .and_then(char::from_u32)
+            };
+            match e {
+                'b' => '\u{8}',
+                't' => '\t',
+                'n' => '\n',
+                'f' => '\u{c}',
+                'r' => '\r',
+                'e' => '\u{1b}',
+                '"' => '"',
+                '\\' => '\\',
+                'x' => hex(2)?,
+                'u' => hex(4)?,
+                'U' => hex(8)?,
+                // A line-ending backslash: the whitespace after it is not
+                // the value's.
+                c if multi && c.is_whitespace() => {
+                    while chars.next_if(|(_, c)| c.is_whitespace()).is_some() {}
+                    continue;
+                }
+                _ => return None,
+            }
+        };
+        offsets.extend(std::iter::repeat_n(open + at, decoded.len_utf8()));
+        value.push(decoded);
+    }
+    Some((value, offsets))
+}
 
 /// The schema this comb reads and writes: the one past the last migration.
 pub fn current() -> i64 {
@@ -451,9 +581,126 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn no_migrations_is_schema_1() {
-        assert_eq!(current(), 1);
-        assert_eq!(template("old_fn()", 1), "old_fn()");
+    fn the_current_schema_is_2() {
+        assert_eq!(current(), 2);
+        assert_eq!(template("{{ lup('x') }}", 2), "{{ lup('x') }}");
+    }
+
+    /// Schema 1 to 2: each function call is written through `_`.
+    #[test]
+    fn every_function_call_is_written_through_underscore() {
+        for (old, new) in [
+            ("{{ spark([1, 2]) }}", "{{ _.spark([1, 2]) }}"),
+            ("{{ hyperlink('u', 't') }}", "{{ _.hyperlink('u', 't') }}"),
+            ("{{ icon('dev-git') }}", "{{ _.icon('dev-git') }}"),
+            ("{{ file_icon('a.rs') }}", "{{ _.file_icon('a.rs') }}"),
+            ("{{ bar(0.5) }}", "{{ _.bar(0.5) }}"),
+            ("{{ merge(sources) }}", "{{ _.merge(sources) }}"),
+            ("{{ now() }}", "{{ _.now() }}"),
+            ("{{ spinner('ab') }}", "{{ _.spinner('ab') }}"),
+            ("{{ lup('.git') }}", "{{ _.lup('.git') }}"),
+            ("{{ exec('ls') }}", "{{ _.exec('ls') }}"),
+            (
+                "{{ execa('ls').exit_code }}",
+                "{{ _.execa('ls').exit_code }}",
+            ),
+            ("{{ url('http://x/') }}", "{{ _.url('http://x/') }}"),
+            (
+                "{{ plugin('sys', 'uname') }}",
+                "{{ _.plugin('sys', 'uname') }}",
+            ),
+            ("{{ log.warn('w') }}", "{{ _.log.warn('w') }}"),
+            (
+                "{% if a %}{{ fail('no') }}{% endif %}",
+                "{% if a %}{{ _.fail('no') }}{% endif %}",
+            ),
+            (
+                "{% set r = lup ('.git', root=true) %}{{ [r, now()] }}",
+                "{% set r = _.lup ('.git', root=true) %}{{ [r, _.now()] }}",
+            ),
+        ] {
+            assert_eq!(template(old, 1), new, "{old}");
+            assert_eq!(template(new, 1), new, "idempotent: {new}");
+        }
+    }
+
+    /// Only calls by the bare name move: a filter, a string, a comment, a
+    /// name after a `.`, a name read not called, and a macro or variable the
+    /// template declares are left.
+    #[test]
+    fn what_is_no_bare_call_is_left() {
+        for text in [
+            "{{ 'ls' | exec() }}",
+            "{{ 'ls' | exec }}",
+            "{{ a | merge(b) | execa(ok=[0]) }}",
+            "{{ 'lup(x)' ~ \"exec('y')\" }}",
+            "{# now() #}{{ 1 }}",
+            "{% raw %}{{ now() }}{% endraw %}",
+            "{{ x.lup('a') ~ _.exec('b') ~ comb.git.merge }}",
+            "{{ now.x ~ log.y ~ url }}",
+            "{% macro bar(x) %}[{{ x }}]{% endmacro %}{{ bar(1) }}",
+            "{% from 'p:macro.m' import icon %}{{ icon('x') }}",
+            "{% set now = 1 %}{{ now }}",
+            "now() outside a tag",
+        ] {
+            assert_eq!(template(text, 1), text, "{text}");
+        }
+    }
+
+    /// A file's templates are rewritten wherever they are, and nothing else in
+    /// it: comments, quoting, escapes and layout are kept.
+    #[test]
+    fn a_file_is_rewritten_in_its_templates_and_nowhere_else() {
+        let old = r#"# lup() in a comment stays
+[client.providers.k]
+template.a = "{{ now() }}"   # now() here stays too
+template.b = '{{ exec("ls") | trim }}'
+macro.m = '''
+{% macro m() %}{{ icon('x') }}{% endmacro %}'''
+[daemon.providers.p.sources.s]
+root = "{{ lup(\".git\", root=true) | dirname }}"
+data = """
+{{ plugin('sys', \
+  'uname') }}"""
+result = { a = "{{ data.a | merge({'b': spinner('ab')}) }}" }
+other = "plain lup() text"
+list = ["{{ bar(1) }}", 'x']
+"#;
+        let new = r#"# lup() in a comment stays
+[client.providers.k]
+template.a = "{{ _.now() }}"   # now() here stays too
+template.b = '{{ _.exec("ls") | trim }}'
+macro.m = '''
+{% macro m() %}{{ _.icon('x') }}{% endmacro %}'''
+[daemon.providers.p.sources.s]
+root = "{{ _.lup(\".git\", root=true) | dirname }}"
+data = """
+{{ _.plugin('sys', \
+  'uname') }}"""
+result = { a = "{{ data.a | merge({'b': _.spinner('ab')}) }}" }
+other = "plain lup() text"
+list = ["{{ _.bar(1) }}", 'x']
+"#;
+        let migrate = MIGRATIONS[0].file;
+        assert_eq!(migrate(old).unwrap(), new);
+        assert_eq!(migrate(new).unwrap(), new, "idempotent");
+        // Through the migrator, the stamp goes on top.
+        let migrator = Migrator::new(MIGRATIONS, PathBuf::from("/nonexistent"));
+        assert_eq!(
+            migrator.rewrite(old, 1).unwrap(),
+            format!("schema.version = 2\n{new}")
+        );
+    }
+
+    #[test]
+    fn a_toml_string_is_read_with_where_each_byte_is_written() {
+        let read = |raw: &str| toml_string(raw).unwrap();
+        assert_eq!(read(r#""a\"b""#), ("a\"b".into(), vec![1, 2, 4]));
+        assert_eq!(read("'a\\b'"), ("a\\b".into(), vec![1, 2, 3]));
+        assert_eq!(read("\"\"\"\nab\"\"\""), ("ab".into(), vec![4, 5]));
+        assert_eq!(read(r#""\u00e9x""#).0, "éx");
+        assert_eq!(read(r#""\u00e9x""#).1, vec![1, 1, 7]);
+        assert!(toml_string("x").is_none());
     }
 
     #[test]

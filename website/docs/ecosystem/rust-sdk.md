@@ -62,10 +62,10 @@ let battery = session.get("battery.percent", None)?;
 ```rust
 let client = Client::new();                          // auto-discover socket
 let client = Client::with_config(ClientConfig { .. }); // explicit config
-let client = Client::with_config(ClientConfig { exec: true, ..Default::default() }); // templates may call exec()
+let client = Client::with_config(ClientConfig { exec: true, ..Default::default() }); // templates may call _.exec()
 ```
 
-`ClientConfig.exec` is off by default: a template that calls `exec()` on a client without it fails with `exec() is disabled in this context`.
+`ClientConfig.exec` is off by default: a template that calls `_.exec()` on a client without it fails with `exec() is disabled in this context`.
 
 #### `client.get(key, path)`
 
@@ -127,7 +127,7 @@ let dirty = session.get("git.dirty", None)?;
 
 ### `libbeachcomber::resolve`
 
-The one client-side resolver — the function `comb get`, `comb eval`, `bc_get`/`bc_eval` and every SDK's `get` and `eval` answer from. `Client::get` and `Session::get` are this function with the process's environment; the daemon holds templates as data (`<provider>:template`, seeded from configuration or `put`) and never evaluates one, so the client renders them with the caller's environment and directory. A plain field is its cached value, a templated one (`kubecontext.context`, `python.version`) is rendered, and a bare provider name is the whole merged namespace. `Ok(None)` is a miss; `Err(ResolveError::Config)` is a template that does not compile or cycles, `Runtime` a failed or disabled `exec()`, `Fetch` a daemon the library could not ask or a key it refused.
+The one client-side resolver — the function `comb get`, `comb eval`, `bc_get`/`bc_eval` and every SDK's `get` and `eval` answer from. `Client::get` and `Session::get` are this function with the process's environment; the daemon holds templates as data (`<provider>:template`, seeded from configuration or `put`) and never evaluates one, so the client renders them with the caller's environment and directory. A plain field is its cached value, a templated one (`kubecontext.context`, `python.version`) is rendered, and a bare provider name is the whole merged namespace. `Ok(None)` is a miss; `Err(ResolveError::Config)` is a template that does not compile or cycles, `Runtime` a failed or disabled `_.exec()`, `Fetch` a daemon the library could not ask or a key it refused.
 
 ```rust
 use libbeachcomber::{Client, Wait};

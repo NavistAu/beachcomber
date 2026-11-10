@@ -262,14 +262,18 @@ pub enum Use {
 }
 
 /// The names `line` calls or pipes into, inside its tags and outside its
-/// strings, and how. A text scan: it can only miss a name built some way a
-/// line has no use for.
+/// strings, and how. A function of the library is called through `_`
+/// (`_.exec(...)`), and only so: a bare call of its name (`exec(...)`) is no
+/// call of it, and not reported. A text scan: it can only miss a name built
+/// some way a line has no use for.
 pub fn used_names(line: &str) -> HashMap<String, Use> {
     let chars: Vec<char> = line.chars().collect();
     let mut found: HashMap<String, Use> = HashMap::new();
     let (mut in_tag, mut quote) = (false, None);
     let mut depth = 0usize;
     let mut last_significant = ' ';
+    // The last name was a bare `_`, and then whether a `.` followed it.
+    let (mut bare_underscore, mut through) = (false, false);
     let mut i = 0;
     while i < chars.len() {
         let c = chars[i];
@@ -321,33 +325,129 @@ pub fn used_names(line: &str) -> HashMap<String, Use> {
                 .iter()
                 .find(|c| !c.is_whitespace())
                 .is_some_and(|c| *c == '(');
-            if !after_dot {
-                let how = match (piped, called) {
+            let function = crate::library::functions().any(|f| f.name == name);
+            let how = if after_dot && through {
+                (function && called).then_some(Use::Call)
+            } else if after_dot {
+                None
+            } else {
+                match (piped, called) {
                     (true, true) => Some(Use::Both),
                     (true, false) => Some(Use::Filter),
-                    (false, true) => Some(Use::Call),
-                    (false, false) => None,
-                };
-                if let Some(how) = how {
-                    found
-                        .entry(name)
-                        .and_modify(|u| {
-                            if *u != how {
-                                *u = Use::Both;
-                            }
-                        })
-                        .or_insert(how);
+                    (false, true) if !function => Some(Use::Call),
+                    _ => None,
                 }
+            };
+            if let Some(how) = how {
+                found
+                    .entry(name.clone())
+                    .and_modify(|u| {
+                        if *u != how {
+                            *u = Use::Both;
+                        }
+                    })
+                    .or_insert(how);
             }
+            bare_underscore = name == "_" && !after_dot;
+            through = false;
             last_significant = 'a';
             continue;
         }
         if !c.is_whitespace() {
+            through = c == '.' && bare_underscore;
+            bare_underscore = false;
             last_significant = c;
         }
         i += 1;
     }
     found
+}
+
+/// Each call in `src` of a library function by its bare name, as comb wrote
+/// them before they moved under `_`: where the name starts and how it is
+/// spelled (`lup`, `log.warn`). Outside strings, comments and `{% raw %}`;
+/// not after a `.` or a `|`; `log` only as `log.<level>(...)`. Whether the
+/// text declares the name itself (a macro, a `set`) is not this scan's:
+/// [`super::bare_calls`] asks the engine.
+pub(crate) fn bare_calls(src: &str) -> Vec<(usize, String)> {
+    let mut out = Vec::new();
+    for tag in engine_tags(src) {
+        if tag.kind == TagKind::Comment {
+            continue;
+        }
+        let base = tag.body.as_ptr() as usize - src.as_ptr() as usize;
+        let tokens = tokens(tag.body);
+        for (k, token) in tokens.iter().enumerate() {
+            let Token::Name(at, name) = *token else {
+                continue;
+            };
+            let before = k.checked_sub(1).map(|j| &tokens[j]);
+            if matches!(before, Some(Token::Punct('.' | '|')))
+                || matches!(before, Some(Token::Name(_, "macro")))
+            {
+                continue;
+            }
+            let after = |n: usize| tokens.get(k + n);
+            let spelled = match name {
+                "log" => match (after(1), after(2), after(3)) {
+                    (
+                        Some(Token::Punct('.')),
+                        Some(Token::Name(_, level)),
+                        Some(Token::Punct('(')),
+                    ) => {
+                        format!("log.{level}")
+                    }
+                    _ => continue,
+                },
+                _ if matches!(after(1), Some(Token::Punct('(')))
+                    && crate::library::functions().any(|f| f.name == name) =>
+                {
+                    name.to_string()
+                }
+                _ => continue,
+            };
+            out.push((base + at, spelled));
+        }
+    }
+    out
+}
+
+/// One token of a tag body, for [`bare_calls`]: a name and its offset, or a
+/// character of anything else. Strings are skipped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Token<'a> {
+    Name(usize, &'a str),
+    Punct(char),
+}
+
+fn tokens(body: &str) -> Vec<Token<'_>> {
+    let bytes = body.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        let c = bytes[i];
+        if c == b'"' || c == b'\'' {
+            i += 1;
+            while i < bytes.len() && bytes[i] != c {
+                i += if bytes[i] == b'\\' { 2 } else { 1 };
+            }
+            i += 1;
+            out.push(Token::Punct('"'));
+        } else if c.is_ascii_alphabetic() || c == b'_' {
+            let start = i;
+            while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+                i += 1;
+            }
+            out.push(Token::Name(start, &body[start..i]));
+        } else if c.is_ascii_whitespace() {
+            i += 1;
+        } else {
+            // A number's digits are one token each: none starts a name.
+            out.push(Token::Punct(c as char));
+            i += 1;
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -368,6 +468,35 @@ mod tests {
         // An equals inside a string, escapes included.
         assert!(!assigns(r#"x | f("a=b")"#));
         assert!(!assigns(r#"x | f("a\"=b")"#));
+    }
+
+    /// A function is called through `_`; its bare name is no call of it. A
+    /// name the library does not call a function (a macro, `range`) is a
+    /// call bare, and a filter is a filter.
+    #[test]
+    fn a_function_is_called_through_underscore_only() {
+        let used = used_names("{{ _.exec('a') ~ _ . lup('b') ~ x._.url() ~ now() ~ m() | merge }}");
+        assert_eq!(used.get("exec"), Some(&Use::Call), "{used:?}");
+        assert_eq!(used.get("lup"), Some(&Use::Call), "{used:?}");
+        assert_eq!(used.get("merge"), Some(&Use::Filter), "{used:?}");
+        assert_eq!(used.get("m"), Some(&Use::Call), "{used:?}");
+        assert!(!used.contains_key("url"), "after x._: {used:?}");
+        assert!(!used.contains_key("now"), "bare: {used:?}");
+        assert!(!used.contains_key("_"), "{used:?}");
+    }
+
+    #[test]
+    fn bare_calls_are_found_where_the_engine_reads_them() {
+        let src = "{{ now() ~ 'lup(1)' ~ x.exec(1) ~ a | exec() }}{# fail() #}\
+                   {% set y = log.warn('w') ~ log.x ~ log('z') %}{% macro bar() %}{% endmacro %}";
+        let found: Vec<(usize, String)> = bare_calls(src);
+        assert_eq!(
+            found,
+            vec![
+                (3, "now".to_string()),
+                (src.find("log.warn").unwrap(), "log.warn".to_string())
+            ]
+        );
     }
 
     #[test]

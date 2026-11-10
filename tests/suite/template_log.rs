@@ -17,7 +17,7 @@ fn a_source_that_fails_keeps_its_last_good_value() {
         format!(
             r#"
 [daemon.providers.s.sources.main]
-data = "{{% if '{flag}' | glob %}}{{{{ fail('no ssh agent') }}}}{{% endif %}}ok"
+data = "{{% if '{flag}' | glob %}}{{{{ _.fail('no ssh agent') }}}}{{% endif %}}ok"
 result.v = "{{{{ data }}}}"
 "#,
             flag = flag.display()

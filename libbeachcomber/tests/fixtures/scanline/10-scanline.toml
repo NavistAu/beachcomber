@@ -13,8 +13,8 @@
 # one small read per run, no process. The name never changes for a root, so a
 # slow poll, not a watch on the busy `.git` directory.
 [daemon.providers.gitstats.sources.worktree]
-root = "{{ lup('.git') | dirname }}"
-data = "{{ (lup('.git', files=true) | read) if lup('.git', files=true) == lup('.git') }}"
+root = "{{ _.lup('.git') | dirname }}"
+data = "{{ (_.lup('.git', files=true) | read) if _.lup('.git', files=true) == _.lup('.git') }}"
 result.worktree = "{% set m = data | regex_search('/worktrees/([^/\\s]+)') %}{{ m[1] if m }}"
 return = "{{ result | poll('10m') | nearest }}"
 
@@ -23,7 +23,7 @@ return = "{{ result | poll('10m') | nearest }}"
 # is {component id: status}; `incidents` is [{impact, start, end}] in epoch
 # seconds, parsed here once per poll rather than in every render.
 [daemon.providers.claude_status.sources.summary]
-data = "{{ url('https://status.claude.com/api/v2/summary.json', timeout='5s') | fromjson }}"
+data = "{{ _.url('https://status.claude.com/api/v2/summary.json', timeout='5s') | fromjson }}"
 result.status = '''
 {%- set ns = namespace(m={}) -%}
 {%- for c in data.components -%}
@@ -34,7 +34,7 @@ result.status = '''
 return = "{{ result | poll('60s') | failback('30s', 3) }}"
 
 [daemon.providers.claude_status.sources.incidents]
-data = "{{ url('https://status.claude.com/api/v2/incidents.json', timeout='5s') | fromjson }}"
+data = "{{ _.url('https://status.claude.com/api/v2/incidents.json', timeout='5s') | fromjson }}"
 result.incidents = '''
 {%- set ns = namespace(out=[]) -%}
 {%- for inc in data.incidents -%}
@@ -114,7 +114,7 @@ rate = '''
     {%- set x = win[name] -%}
     {%- set ps = ("%.0f" | format(x.pct)) ~ "%" -%}
     {%- set ltext = ((" " ~ (ps | pad(3, "right"))) | pad(lw)) if left[name] else ((ps ~ " ") | pad(lw, "right")) -%}
-    {{- bar(w,
+    {{- _.bar(w,
         {"value": x.pct / 100, "colour": x.colour, "from_right": true, "marker": (x.time_pct / 100) if (x.time_pct > 0) else none, "text": ltext},
         "  " ~ label ~ "  ",
         {"value": x.time_pct / 100, "colour": (100 - x.time_pct) | ramp([20, 50, 80], [th.green, th.yellow, th.orange, th.red]), "text": (" " ~ x.left_str) | pad(rw)},
@@ -122,7 +122,7 @@ rate = '''
 {%- endmacro -%}
 {%- macro no_limit() -%}
     {#- A 7D window and no 5H one: the plan has no 5H limit (Ultra, formerly Max 20x). -#}
-    {{- bar(w, {"value": 0, "colour": th.green, "text": "5H  no limit" | pad(w, "center")},
+    {{- _.bar(w, {"value": 0, "colour": th.green, "text": "5H  no limit" | pad(w, "center")},
         empty=th.bar_empty, fill_fg=th.bar_dark_fg, text_fg=th.bar_label_fg, bold=true) -}}
 {%- endmacro -%}
 {%- macro overage() -%}
@@ -131,7 +131,7 @@ rate = '''
     {%- set amount = ("$" ~ ("%.2f" | format(ov.value | float)) ~ ov.currency) if ov else "" -%}
     {%- set lbl = (" OVER: " ~ amount ~ " ") if (ov and (ov.kind == "balance")) else ((" OVER: " ~ amount ~ " spent ") if (ov and (ov.kind == "spent")) else " OVER ") -%}
     {%- set elapsed = ((18000 - ([x.left, 18000] | min)) / 18000) | clamp(0, 1) -%}
-    {{- bar(w, {"label": lbl, "fg": th.red, "bg": none},
+    {{- _.bar(w, {"label": lbl, "fg": th.red, "bg": none},
         {"value": elapsed, "colour": th.green, "text": x.left_str | pad(w - (lbl | width), "center")},
         empty=th.bar_empty, fill_fg=th.bar_dark_fg, text_fg=th.bar_label_fg, bold=true) -}}
 {%- endmacro -%}
@@ -185,7 +185,7 @@ windows = '''
     {%- set p = (win[pct] | float) if win else 0.0 -%}
     {%- set resets = (win.resets_at if win else 0) if (name != "quota") else win.resets_at -%}
     {%- set timed = resets is number -%}
-    {%- set left = ([0, ([0, resets] | max) - now()] | max) if timed else 0 -%}
+    {%- set left = ([0, ([0, resets] | max) - _.now()] | max) if timed else 0 -%}
     {%- set tp = ((span - ([left, span] | min)) / span * 100) if timed else 0 -%}
     {%- set ns.d = ns.d | merge({name: {"pct": p, "left": left, "time_pct": tp, "timed": timed, "colour": usage(p, tp, th), "left_str": left | duration(floor="m")}}) -%}
 {%- endfor -%}
@@ -207,7 +207,7 @@ context_bar = '''
 {%- set collides = (mcol >= right_start) and (mcol < w) -%}
 {%- set pstart = ([mcol - (label | width), 0] | max) if collides else right_start -%}
 {%- set pend = mcol if collides else w -%}
-{{- bar(w, {"value": p / 100, "colour": col, "marker": 0.65, "marker_round": "floor", "marker_char": "!", "marker_fg": th.red, "text": label[0:(pend - pstart)] | pad(pend, "right"), "text_fg": col}, empty=th.bar_empty, fill_fg=th.bar_dark_fg, bold=true) -}}
+{{- _.bar(w, {"value": p / 100, "colour": col, "marker": 0.65, "marker_round": "floor", "marker_char": "!", "marker_fg": th.red, "text": label[0:(pend - pstart)] | pad(pend, "right"), "text_fg": col}, empty=th.bar_empty, fill_fg=th.bar_dark_fg, bold=true) -}}
 '''
 
 model = '''
@@ -238,7 +238,7 @@ model = '''
     {%- set mk = [((q.time_pct / 100 * w) | round | int), ([0, w - 1] | max)] | min -%}
     {%- set rstart = [0, w - ((ps | width) + 1)] | max -%}
     {%- set pstart = ([(nm | width) + 2, rstart] | min) if (hasmk and (mk >= rstart) and (mk < (rstart + (ps | width)))) else rstart -%}
-    {{- bar(w, {"value": p / 100, "colour": col, "marker": (q.time_pct / 100) if hasmk else none, "text": ((" " ~ nm) | pad(pstart)) ~ ps, "text_fg": th.bar_label_fg}, empty=th.bar_empty, fill_fg=th.bar_dark_fg, bold=true) -}}
+    {{- _.bar(w, {"value": p / 100, "colour": col, "marker": (q.time_pct / 100) if hasmk else none, "text": ((" " ~ nm) | pad(pstart)) ~ ps, "text_fg": th.bar_label_fg}, empty=th.bar_empty, fill_fg=th.bar_dark_fg, bold=true) -}}
 {%- else -%}
     {%- set ics = ("⚡" if m.fast else "") ~ ("💭" if m.thinking else "") -%}
     {%- set tag = fit(m.short, ics, m.effort, w) -%}
@@ -299,7 +299,7 @@ claude_changes = '''
 {%- set stats = (ws.lines_added > 0) or (ws.lines_removed > 0) -%}
 {%- set tool = ws.active_tool -%}
 {%- set ag = ws.running_agents > 0 -%}
-{%- set sp = spinner("◐◓◑◒") -%}
+{%- set sp = _.spinner("◐◓◑◒") -%}
 {{- ("✎ " if (stats or tool or ag) else "") ~ ((("+" ~ ws.lines_added) if stats else "") | fg(th.green)) ~ (" " if stats else "") ~ ((("-" ~ ws.lines_removed) if stats else "") | fg(th.red)) ~ (" " if (tool and stats) else "") ~ (((sp ~ " " ~ tool) if tool else "") | fg(th.blue)) ~ (" " if (ag and (stats or tool)) else "") ~ (("⏳" ~ ws.running_agents) if ag else "") -}}
 '''
 
@@ -319,7 +319,7 @@ api_sparkline = '''
 {%- set w = env.SCANLINE_WIDTH | int -%}
 {%- set th = scanline.theme -%}
 {%- set k = scanline.status_page -%}
-{%- set t = now() -%}
+{%- set t = _.now() -%}
 {%- set start = t - (w * 3600) -%}
 {%- set ns = namespace(ev=[]) -%}
 {%- if w > 0 -%}

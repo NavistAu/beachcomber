@@ -479,11 +479,11 @@ async fn a_source_that_never_succeeded_is_visible() {
     let sock = tmp.path().join("test.sock");
     let config = Config::from_toml(
         "[daemon.providers.broke.sources.main]\n\
-         data = \"{{ exec(['false']) }}\"\n\
+         data = \"{{ _.exec(['false']) }}\"\n\
          result.x = \"{{ data }}\"\n\
          result.y = \"{{ data }}\"\n\
          [daemon.providers.whole.sources.main]\n\
-         data = \"{{ exec(['false']) }}\"\n\
+         data = \"{{ _.exec(['false']) }}\"\n\
          result = \"{{ data }}\"\n",
     );
     let (handle, ready) = beachcomber::daemon::start_in_process_polling(sock.clone(), config);
@@ -1130,7 +1130,7 @@ fn a_libsys_or_libgit_on_the_plugin_path_is_a_warning() {
         format!(
             "[daemon.plugin]\npath = [\"{}\"]\n\n\
              [daemon.providers.box.sources.host]\n\
-             data = \"{{{{ plugin('sys', 'hostname') }}}}\"\n\
+             data = \"{{{{ _.plugin('sys', 'hostname') }}}}\"\n\
              result = \"{{{{ data }}}}\"\n",
             plugins.display()
         ),

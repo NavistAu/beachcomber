@@ -29,7 +29,7 @@ const MEMO_SOURCE: &str = "memo";
 /// where a user wants values. Each leaf under a `<p>:template` row visible
 /// from `cwd` — the row's own path, an ancestor of it up to `$HOME`, or the
 /// global entry — is resolved as `<p>.<leaf>` would be by
-/// `comb get`, with `exec()` on: `comb status` is one of the surfaces that
+/// `comb get`, with `_.exec()` on: `comb status` is one of the surfaces that
 /// opted in.
 ///
 /// A leaf that resolves to nothing is a row with a null value, which the

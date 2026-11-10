@@ -59,7 +59,7 @@ async fn e2e_config_source_from_config() {
     let config = beachcomber::config::Config::from_toml(
         r#"
 [daemon.providers.test_echo.sources.main]
-data = "{{ exec(['echo', '{\"greeting\":\"hello\"}']) | fromjson }}"
+data = "{{ _.exec(['echo', '{\"greeting\":\"hello\"}']) | fromjson }}"
 result = "{{ data }}"
 return = "{{ result | poll('60s') }}"
 "#,

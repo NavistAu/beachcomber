@@ -62,7 +62,7 @@ Standard Rust API compatibility rules apply. Public API changes follow [the Carg
 
 ### Plugin C ABI
 
-The C ABI documented in [Provider Development §8](/docs/internals/provider-development#8-plugins) is a public binary interface: a plugin symbol is `const char* symbol(const char* input)`, taking the arguments of `plugin(name, symbol, args...)` as a NUL-terminated JSON array and returning a NUL-terminated JSON value owned by the library. The signature, the ownership contract and the way the daemon finds libraries (`[daemon.plugin] path`) are covered by the same stability guarantees as the wire protocol.
+The C ABI documented in [Provider Development §8](/docs/internals/provider-development#8-plugins) is a public binary interface: a plugin symbol is `const char* symbol(const char* input)`, taking the arguments of `_.plugin(name, symbol, args...)` as a NUL-terminated JSON array and returning a NUL-terminated JSON value owned by the library. The signature, the ownership contract and the way the daemon finds libraries (`[daemon.plugin] path`) are covered by the same stability guarantees as the wire protocol.
 
 | Change | Version bump |
 |---|---|

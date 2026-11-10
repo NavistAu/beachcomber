@@ -126,7 +126,7 @@ unsafe fn build_client(options_json: *const c_char) -> Result<libbeachcomber::Cl
 /// | `timeout_ms`         | 250                         | how long one read or write may take; at least 1 |
 /// | `connect_timeout_ms` | 1500                        | how long connecting keeps retrying; 0 is one attempt |
 /// | `autostart`          | `true`                      | start a daemon when none answers an auto-discovered socket |
-/// | `exec`               | `false`                     | whether a template this client renders (`bc_get`, `bc_eval`) may call `exec()` |
+/// | `exec`               | `false`                     | whether a template this client renders (`bc_get`, `bc_eval`) may call `_.exec()` |
 ///
 /// These defaults are the only ones: an SDK passes on what its caller gave
 /// and adds none of its own. A key not in this table is refused. Never
@@ -469,7 +469,7 @@ fn get_value(
 /// deadline is the client's `timeout_ms` plus the `wait`; `"forever"` has
 /// none. A key not in this table, or a `wait` that is neither, is a
 /// `parse_error`.
-/// `exec()` inside a template runs only on a client created with
+/// `_.exec()` inside a template runs only on a client created with
 /// `{"exec":true}`; otherwise it fails with `exec() is disabled in this
 /// context`.
 ///
@@ -504,7 +504,7 @@ pub unsafe extern "C" fn bc_get(
 /// value is `none` or undefined is absent: `data: null`, as a miss is for
 /// [`bc_get`].
 ///
-/// `cwd`, `env_json` and `exec()` behave as for [`bc_get`].
+/// `cwd`, `env_json` and `_.exec()` behave as for [`bc_get`].
 ///
 /// # Safety
 /// `client` must be a valid pointer from [`bc_client_new`]; `template_str`
@@ -541,7 +541,7 @@ pub unsafe extern "C" fn bc_eval(
 /// reason short of allocation failure.
 pub struct BcSession {
     state: Mutex<Result<libbeachcomber::Session, FfiError>>,
-    /// Whether the client it was opened on allows `exec()` ([`bc_get`]).
+    /// Whether the client it was opened on allows `_.exec()` ([`bc_get`]).
     allow_exec: bool,
 }
 
@@ -743,7 +743,7 @@ pub struct BcWatch {
 /// both the directory every subscription is opened at and the one every
 /// re-resolution runs in, and NULL watches the global entry. `env_json` is
 /// nullable: NULL renders with the calling process's environment, as `comb` does.
-/// `exec()` inside a template runs only on a client created with
+/// `_.exec()` inside a template runs only on a client created with
 /// `{"exec":true}`.
 ///
 /// Returns NULL only when the process is out of memory or of file

@@ -106,7 +106,7 @@ The raw text is readable the same way: `comb get prompt:template` prints the exp
 
 ## Commands in templates
 
-A template can run a command with `exec()`, but only on a client that allows it (`comb get`, `comb eval`, an SDK
+A template can run a command with `_.exec()`, but only on a client that allows it (`comb get`, `comb eval`, an SDK
 client constructed with `exec` on), and it runs on every read. Pipe it through `cache()` so its value is remembered
 until a watched file changes or a ttl ends; the shipped `kubecontext` template does this. See
 [Caching a template](../reference/template-library.md#caching-a-template). A command that should run on a schedule, once

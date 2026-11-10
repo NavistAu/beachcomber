@@ -2087,8 +2087,8 @@ fn marker_fixture(nearest: bool) -> Fixture {
         || {
             let layer: toml::Value = toml::from_str(&format!(
                 "[daemon.providers.m.sources.s]\n\
-                 root = \"{{{{ lup('.marker') | dirname }}}}\"\n\
-                 data = \"{{{{ exec('pwd') | trim }}}}\"\n\
+                 root = \"{{{{ _.lup('.marker') | dirname }}}}\"\n\
+                 data = \"{{{{ _.exec('pwd') | trim }}}}\"\n\
                  result.at = \"{{{{ data }}}}\"\n{}",
                 if nearest {
                     "return = \"{{ result | nearest }}\"\n"

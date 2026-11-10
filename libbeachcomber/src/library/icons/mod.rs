@@ -113,10 +113,10 @@ mod tests {
 
     #[test]
     fn icon_dev_git_is_u_e702() {
-        assert_eq!(ok("icon('dev-git')"), "\u{e702}");
-        assert_eq!(ok("icon('cod-account')"), "\u{eb99}");
+        assert_eq!(ok("_.icon('dev-git')"), "\u{e702}");
+        assert_eq!(ok("_.icon('cod-account')"), "\u{eb99}");
         assert_eq!(
-            ok("icon('oct-repo')"),
+            ok("_.icon('oct-repo')"),
             glyph("oct-repo").unwrap().to_string()
         );
         // Astral code points work: md- glyphs live above U+FFFF.
@@ -125,7 +125,7 @@ mod tests {
 
     #[test]
     fn icon_unknown_is_an_error_naming_the_version() {
-        let e = eval("icon('nope')").unwrap_err();
+        let e = eval("_.icon('nope')").unwrap_err();
         assert!(
             e.contains(&format!(
                 "icon(): unknown glyph 'nope' (Nerd Fonts {VERSION})"
@@ -133,15 +133,15 @@ mod tests {
             "{e}"
         );
         assert!(
-            eval("icon('nf-dev-git')").is_err(),
+            eval("_.icon('nf-dev-git')").is_err(),
             "one form: no nf- prefix"
         );
     }
 
     #[test]
     fn icon_absent_is_absent() {
-        assert_eq!(ok("icon(none) is undefined"), "True");
-        assert_eq!(ok("icon(missing) is undefined"), "True");
+        assert_eq!(ok("_.icon(none) is undefined"), "True");
+        assert_eq!(ok("_.icon(missing) is undefined"), "True");
     }
 
     #[test]
@@ -170,7 +170,7 @@ mod tests {
     #[test]
     fn file_icon_by_name() {
         assert_eq!(
-            ok("file_icon('/a/b/.gitignore')"),
+            ok("_.file_icon('/a/b/.gitignore')"),
             files::BY_NAME[files::BY_NAME
                 .binary_search_by_key(&".gitignore", |e| e.0)
                 .unwrap()]
@@ -181,7 +181,10 @@ mod tests {
 
     #[test]
     fn file_icon_by_lowercased_name() {
-        assert_eq!(ok("file_icon('Makefile') == file_icon('makefile')"), "True");
+        assert_eq!(
+            ok("_.file_icon('Makefile') == _.file_icon('makefile')"),
+            "True"
+        );
         assert_ne!(file_glyph("Makefile"), files::DEFAULT);
     }
 
@@ -198,14 +201,14 @@ mod tests {
     fn file_icon_unknown_is_the_default() {
         assert_eq!(file_glyph("zzz.unheardof"), files::DEFAULT);
         assert_eq!(file_glyph(".nothing"), files::DEFAULT);
-        assert_eq!(ok("file_icon('plain')"), files::DEFAULT.to_string());
+        assert_eq!(ok("_.file_icon('plain')"), files::DEFAULT.to_string());
         assert_eq!(files::DEFAULT, glyph("fa-file").unwrap());
     }
 
     #[test]
     fn file_icon_absent_is_absent() {
-        assert_eq!(ok("file_icon(none) is undefined"), "True");
-        assert_eq!(ok("file_icon('') is undefined"), "True");
+        assert_eq!(ok("_.file_icon(none) is undefined"), "True");
+        assert_eq!(ok("_.file_icon('') is undefined"), "True");
     }
 
     #[test]

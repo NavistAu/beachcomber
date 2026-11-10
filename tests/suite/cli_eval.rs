@@ -208,7 +208,7 @@ fn eval_and_a_format_import() {
 fn url_on_the_client_is_refused_clearly() {
     let d = TestDaemon::serve();
 
-    for call in ["url('http://127.0.0.1:1/')", "plugin('a', 'b')"] {
+    for call in ["_.url('http://127.0.0.1:1/')", "_.plugin('a', 'b')"] {
         let name = call.split('(').next().unwrap();
         d.comb(Path::new("/"))
             .args(["eval", &format!("{{{{ {call} }}}}")])
@@ -217,6 +217,36 @@ fn url_on_the_client_is_refused_clearly() {
             .stderr(predicates::str::contains(format!(
                 "{name}() runs only in a Source's lines"
             )));
+    }
+}
+
+/// comb's functions are called through `_`, so a bare name is a provider,
+/// even one named like a function: a put's `now`, `log` and `url` read bare.
+/// A bare call of a function says where it went.
+#[test]
+fn a_bare_name_is_a_provider_and_a_bare_call_names_the_new_spelling() {
+    let d = TestDaemon::serve();
+    for (ns, v) in [("now", "1"), ("log", "2"), ("url", "3")] {
+        d.comb(Path::new("/"))
+            .args(["put", "--global", &format!("{ns}.x"), v])
+            .assert()
+            .success();
+    }
+    d.comb(Path::new("/"))
+        .args(["eval", "{{ now.x ~ log.x ~ url.x ~ (_.now() > 0) }}"])
+        .assert()
+        .success()
+        .stdout(predicates::str::diff("123True"));
+    for (src, said) in [
+        ("{{ lup('.git') }}", "lup() is now _.lup()"),
+        ("{{ log.warn('x') }}", "log.warn() is now _.log.warn()"),
+        ("a {{ now() }}", "now() is now _.now()"),
+    ] {
+        d.comb(Path::new("/"))
+            .args(["eval", src])
+            .assert()
+            .failure()
+            .stderr(predicates::str::contains(said));
     }
 }
 

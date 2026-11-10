@@ -722,7 +722,7 @@ mod tests {
         let registry = ProviderRegistry::with_config(
             &crate::config_tests::with_shipped_defaults(&format!(
                 "[daemon.providers.demo.sources.s]\n\
-                 data = \"{{{{ exec(['sh', '-c', 'echo run >> {d}/runs; touch {d}/started; \
+                 data = \"{{{{ _.exec(['sh', '-c', 'echo run >> {d}/runs; touch {d}/started; \
                  while [ ! -f {d}/go ]; do sleep 0.01; done; echo 1']) | trim }}}}\"\n\
                  result.v = \"{{{{ data }}}}\"\n",
                 d = dir.display()

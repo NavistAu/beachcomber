@@ -212,7 +212,7 @@ describe('Client against a real daemon (FFI transport)', { skip }, () => {
   });
 
   it('exec() is disabled on a client without the option', async () => {
-    await client.put('itest_exec:template', { out: "{{ exec(['printf', 'x']) }}" });
+    await client.put('itest_exec:template', { out: "{{ _.exec(['printf', 'x']) }}" });
     await assert.rejects(
       () => client.get('itest_exec.out', { cwd: '/tmp' }),
       (err: unknown) => {
@@ -224,7 +224,7 @@ describe('Client against a real daemon (FFI transport)', { skip }, () => {
   });
 
   it('exec() runs on a client with the option', async () => {
-    await client.put('itest_exec2:template', { out: "{{ exec(['printf', 'x']) }}" });
+    await client.put('itest_exec2:template', { out: "{{ _.exec(['printf', 'x']) }}" });
     const execClient = new Client({ socketPath: daemon.sockPath, timeoutMs: 5000, exec: true });
     try {
       assert.equal(await execClient.get('itest_exec2.out', { cwd: '/tmp' }), 'x');

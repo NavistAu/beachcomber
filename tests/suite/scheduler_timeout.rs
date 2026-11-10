@@ -217,7 +217,7 @@ fn an_inline_run_is_cut_off_at_the_sources_timeout() {
         xdg.join("beachcomber").join("config.toml"),
         r#"
 [daemon.providers.t.sources.main]
-data = "{{ exec('sleep 5', timeout='6s') }}"
+data = "{{ _.exec('sleep 5', timeout='6s') }}"
 result.v = "{{ data }}"
 return = "{{ result | timeout('50ms') }}"
 "#,

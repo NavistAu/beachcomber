@@ -30,7 +30,7 @@ fn bc_eval_of_exec_call_returns_disabled_message_without_the_option() {
     let dir = tempfile::TempDir::new().unwrap();
     let client = client_for(&dir.path().join("nonexistent.sock"));
 
-    let v = eval(client, "{{ exec(['printf', 'x']) }}");
+    let v = eval(client, "{{ _.exec(['printf', 'x']) }}");
     assert_eq!(v["ok"], serde_json::json!(false), "{v}");
     assert_eq!(v["error"]["kind"], serde_json::json!("server_error"), "{v}");
     assert!(
@@ -57,7 +57,7 @@ fn bc_eval_of_exec_call_runs_with_the_option() {
         },
     );
 
-    let v = eval(client, "{{ exec(['printf', 'x']) }}");
+    let v = eval(client, "{{ _.exec(['printf', 'x']) }}");
     assert_eq!(v["ok"], serde_json::json!(true), "{v}");
     assert_eq!(v["data"], serde_json::json!("x"));
 
@@ -78,7 +78,7 @@ fn bc_eval_of_a_failing_exec_is_a_server_error() {
         },
     );
 
-    let v = eval(client, "{{ exec('false') }}");
+    let v = eval(client, "{{ _.exec('false') }}");
     assert_eq!(v["ok"], serde_json::json!(false), "{v}");
     assert_eq!(v["error"]["kind"], serde_json::json!("server_error"), "{v}");
 
@@ -99,7 +99,7 @@ fn bc_eval_exec_sees_env_json_not_the_host_env() {
         },
     );
 
-    let src = cs(r#"{{ exec('echo "[$FOO][$HOME]"') }}"#);
+    let src = cs(r#"{{ _.exec('echo "[$FOO][$HOME]"') }}"#);
     let cwd = cs("/tmp");
     let env = cs(r#"{"FOO":"bar"}"#);
     let v = read(unsafe { bc_eval(client, src.as_ptr(), cwd.as_ptr(), env.as_ptr()) });

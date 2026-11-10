@@ -26,7 +26,7 @@ fn side(name: &str, v: Option<MjValue>) -> Result<Option<f64>, Error> {
     }
 }
 
-/// `spark(values, lo=none, hi=none)`: one glyph per value, `lo` the lowest and
+/// `_.spark(values, lo=none, hi=none)`: one glyph per value, `lo` the lowest and
 /// `hi` the highest (the data's own minimum and maximum when `none`). A value
 /// outside the scale is held to it, and a `none` value is a space. Equal ends
 /// (all values the same) draw the middle glyph. The arguments are checked first.
@@ -91,69 +91,69 @@ mod tests {
 
     #[test]
     fn spark_scales_to_the_data() {
-        assert_eq!(ok("spark([1, 5, 3, 8])"), "▁▅▃█");
-        assert_eq!(ok("spark([0, 1, 2, 3, 4, 5, 6, 7])"), "▁▂▃▄▅▆▇█");
-        assert_eq!(ok("spark([3, 1])"), "█▁");
-        assert_eq!(ok("spark([-2, 0, 2])"), "▁▅█");
-        assert_eq!(ok("spark([0.5, 1.5])"), "▁█");
-        assert_eq!(ok("spark([7])"), "▅");
-        assert_eq!(ok("spark([]) == ''"), "True");
+        assert_eq!(ok("_.spark([1, 5, 3, 8])"), "▁▅▃█");
+        assert_eq!(ok("_.spark([0, 1, 2, 3, 4, 5, 6, 7])"), "▁▂▃▄▅▆▇█");
+        assert_eq!(ok("_.spark([3, 1])"), "█▁");
+        assert_eq!(ok("_.spark([-2, 0, 2])"), "▁▅█");
+        assert_eq!(ok("_.spark([0.5, 1.5])"), "▁█");
+        assert_eq!(ok("_.spark([7])"), "▅");
+        assert_eq!(ok("_.spark([]) == ''"), "True");
     }
 
     #[test]
     fn spark_lo_and_hi_fix_the_scale() {
-        assert_eq!(ok("spark([0, 50, 100], lo=0, hi=100)"), "▁▅█");
-        assert_eq!(ok("spark([2, 4], lo=0, hi=8)"), "▃▅");
-        assert_eq!(ok("spark([2, 4], 0, 8)"), "▃▅");
+        assert_eq!(ok("_.spark([0, 50, 100], lo=0, hi=100)"), "▁▅█");
+        assert_eq!(ok("_.spark([2, 4], lo=0, hi=8)"), "▃▅");
+        assert_eq!(ok("_.spark([2, 4], 0, 8)"), "▃▅");
         // Outside the scale is held to it.
-        assert_eq!(ok("spark([-5, 5, 500], lo=0, hi=10)"), "▁▅█");
+        assert_eq!(ok("_.spark([-5, 5, 500], lo=0, hi=10)"), "▁▅█");
         // One fixed side, the other the data's.
-        assert_eq!(ok("spark([5, 10], lo=0)"), "▅█");
-        assert_eq!(ok("spark([0, 5], hi=10)"), "▁▅");
-        assert_eq!(ok("spark([1, 2], lo=none, hi=none)"), "▁█");
+        assert_eq!(ok("_.spark([5, 10], lo=0)"), "▅█");
+        assert_eq!(ok("_.spark([0, 5], hi=10)"), "▁▅");
+        assert_eq!(ok("_.spark([1, 2], lo=none, hi=none)"), "▁█");
     }
 
     #[test]
     fn spark_of_equal_values_draws_the_middle() {
-        assert_eq!(ok("spark([4, 4, 4])"), "▅▅▅");
-        assert_eq!(ok("spark([4, 4], lo=4, hi=4)"), "▅▅");
-        assert_eq!(ok("spark([0, 0])"), "▅▅");
+        assert_eq!(ok("_.spark([4, 4, 4])"), "▅▅▅");
+        assert_eq!(ok("_.spark([4, 4], lo=4, hi=4)"), "▅▅");
+        assert_eq!(ok("_.spark([0, 0])"), "▅▅");
     }
 
     #[test]
     fn spark_draws_a_none_value_as_a_space() {
-        assert_eq!(ok("spark([1, none, 3])"), "▁ █");
-        assert_eq!(ok("spark([none, none])"), "  ");
-        assert_eq!(ok("spark([none, 2], lo=0, hi=4)"), " ▅");
+        assert_eq!(ok("_.spark([1, none, 3])"), "▁ █");
+        assert_eq!(ok("_.spark([none, none])"), "  ");
+        assert_eq!(ok("_.spark([none, 2], lo=0, hi=4)"), " ▅");
     }
 
     #[test]
     fn spark_of_nothing_is_undefined_after_its_arguments_are_checked() {
-        assert_eq!(ok("spark(none) is undefined"), "True");
-        assert_eq!(ok("spark(nope) is undefined"), "True");
-        let e = err("spark(none, lo=3, hi=1)");
+        assert_eq!(ok("_.spark(none) is undefined"), "True");
+        assert_eq!(ok("_.spark(nope) is undefined"), "True");
+        let e = err("_.spark(none, lo=3, hi=1)");
         assert!(e.contains("spark(): lo 3 is above hi 1"), "{e}");
-        let e = err("spark(none, lo='a')");
+        let e = err("_.spark(none, lo='a')");
         assert!(e.contains("spark(): lo a is not a number"), "{e}");
     }
 
     #[test]
     fn spark_rejects_bad_input() {
-        let e = err("spark(5)");
+        let e = err("_.spark(5)");
         assert!(e.contains("spark(): values must be a list"), "{e}");
-        let e = err("spark('1,2')");
+        let e = err("_.spark('1,2')");
         assert!(e.contains("spark(): values must be a list"), "{e}");
-        let e = err("spark([1, 'x'])");
+        let e = err("_.spark([1, 'x'])");
         assert!(e.contains("spark(): value x is not a number"), "{e}");
-        let e = err("spark([1], hi='x')");
+        let e = err("_.spark([1], hi='x')");
         assert!(e.contains("spark(): hi x is not a number"), "{e}");
-        let e = err("spark([1], lo=2, hi=1)");
+        let e = err("_.spark([1], lo=2, hi=1)");
         assert!(e.contains("spark(): lo 2 is above hi 1"), "{e}");
-        let e = err("spark([1], 0, 1, 2)");
+        let e = err("_.spark([1], 0, 1, 2)");
         assert!(e.contains("spark(): takes at most 3 arguments"), "{e}");
-        let e = err("spark([1], top=1)");
+        let e = err("_.spark([1], top=1)");
         assert!(e.contains("spark(): unknown argument"), "{e}");
-        let e = err("spark()");
+        let e = err("_.spark()");
         assert!(e.contains("spark(): takes a list of values"), "{e}");
     }
 }

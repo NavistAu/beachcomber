@@ -108,7 +108,7 @@ These are real envelopes from a client made with `bc_client_new(NULL)`:
 bc_hello            {"data":{"daemon_version":"0.9.1+sha.e22096aa","protocol_version":"1.0"},"ok":true}
 bc_get hostname.short   {"data":"myhost","ok":true}
 bc_get nosuch.thing     {"data":null,"ok":true}
-bc_eval "{{ exec('echo hi') }}"
+bc_eval "{{ _.exec('echo hi') }}"
                     {"error":{"kind":"server_error","message":"<eval>: expression eval error: exec() is disabled in this context"},"ok":false}
 ```
 
@@ -223,12 +223,12 @@ A call's `env` map becomes the spawned `comb`'s whole environment, `--socket` ca
 `$BEACHCOMBER_SOCKET`, and `--no-exec` is passed unless the client allows `exec`, so a spawned render matches an FFI
 one.
 
-## `exec()` is off on a client
+## `_.exec()` is off on a client
 
-A template can call `exec()` to run a command. `comb` allows it; a library client does not unless you ask, so a
+A template can call `_.exec()` to run a command. `comb` allows it; a library client does not unless you ask, so a
 program that embeds an SDK never spawns processes on the user's behalf by accident. Pass `exec: true` when you create
 the client (`bc_client_new("{\"exec\":true}")`, `Client(exec=True)`, `WithExec(true)`, and so on). Without it, a
-template that calls `exec()` fails with `exec() is disabled in this context`, as the envelope above shows. The option
+template that calls `_.exec()` fails with `exec() is disabled in this context`, as the envelope above shows. The option
 applies to everything the client renders: `get`, `eval`, sessions and watches.
 
 ## Versions

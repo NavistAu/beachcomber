@@ -200,7 +200,7 @@ pub struct DaemonConfig {
     /// Each line is KEY=VALUE (or KEY="VALUE"). Blank lines and #comments are ignored.
     /// These vars are injected into the daemon's environment before any providers execute,
     /// making them reach a Source's lines as `env.VAR` (an unset one renders empty)
-    /// and the commands its `exec()` runs.
+    /// and the commands its `_.exec()` runs.
     /// Default: `env` beside the config file.
     pub env_file: Option<String>,
     /// How often the watchdog checks the scheduler heartbeat. Default: disabled (None).
@@ -230,7 +230,7 @@ pub struct DaemonConfig {
     /// `Config::errors`.
     #[serde(default = "empty_table")]
     pub providers: toml::Value,
-    /// `[daemon.plugin]`: where `plugin(name, ...)` finds libraries, `path`
+    /// `[daemon.plugin]`: where `_.plugin(name, ...)` finds libraries, `path`
     /// only (`Config::plugin_path`). A `toml::Value` for the reason
     /// `Config::client` is one.
     #[serde(default = "empty_table")]
@@ -327,7 +327,7 @@ impl DaemonConfig {
 }
 
 impl Config {
-    /// The directories `plugin(name, ...)` searches for `lib<name>.<ext>`, in
+    /// The directories `_.plugin(name, ...)` searches for `lib<name>.<ext>`, in
     /// order: `[daemon.plugin] path` with a leading `~` written as `home`, or,
     /// when the list is not given, the `plugins` directory beside the config
     /// file (none for a `Config` built in memory, which reads nothing ambient).
@@ -925,7 +925,7 @@ impl Config {
 
     /// Load environment variables from the env file ([`Self::env_file_path`]).
     /// Sets them in the process environment, so they reach a Source's lines as
-    /// `env.VAR` (an unset one renders empty) and the commands its `exec()` runs.
+    /// `env.VAR` (an unset one renders empty) and the commands its `_.exec()` runs.
     /// Returns the number of variables loaded. `comb daemon` calls it once,
     /// before its runtime starts.
     ///

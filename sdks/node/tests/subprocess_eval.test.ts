@@ -58,7 +58,7 @@ describe('subprocess transport eval against a real daemon', { skip }, () => {
 
   it('a template that cannot render is a ServerError', async () => {
     await assert.rejects(
-      () => evaluate('{{ exec("echo hi") }}'),
+      () => evaluate('{{ _.exec("echo hi") }}'),
       (err: unknown) => err instanceof ServerError && /exec\(\) is disabled/.test(err.message),
     );
   });
@@ -66,7 +66,7 @@ describe('subprocess transport eval against a real daemon', { skip }, () => {
   it('exec runs on a client made with exec: true', async () => {
     const execHandle = tp.newClient({ socketPath: daemon.sockPath, timeoutMs: 5000, exec: true });
     try {
-      assert.equal(await evaluate('{{ exec("echo hi") | trim }}', undefined, execHandle), 'hi');
+      assert.equal(await evaluate('{{ _.exec("echo hi") | trim }}', undefined, execHandle), 'hi');
     } finally {
       tp.freeClient(execHandle);
     }

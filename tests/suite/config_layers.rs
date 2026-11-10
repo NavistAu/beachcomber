@@ -88,7 +88,7 @@ fn get(d: &TestDaemon, key: &str) -> Option<Value> {
 
 const BASE: &str = r#"
 [daemon.providers.demo.sources.s]
-data = "{{ exec('echo base') | trim }}"
+data = "{{ _.exec('echo base') | trim }}"
 result.a = "{{ data }}-a"
 result.b = "{{ data }}-b"
 "#;
@@ -122,11 +122,11 @@ fn a_return_line_replaces_the_schedule_whole() {
             "config.toml",
             r#"
 [daemon.providers.demo.sources.plain]
-data = "{{ exec('echo p') | trim }}"
+data = "{{ _.exec('echo p') | trim }}"
 result.a = "{{ data }}"
 
 [daemon.providers.demo.sources.own]
-data = "{{ exec('echo o') | trim }}"
+data = "{{ _.exec('echo o') | trim }}"
 result.b = "{{ data }}"
 "#,
         ),
@@ -163,7 +163,7 @@ fn a_new_source_table_adds_a_source() {
             "conf.d/10-more.toml",
             r#"
 [daemon.providers.demo.sources.t]
-data = "{{ exec('echo more') | trim }}"
+data = "{{ _.exec('echo more') | trim }}"
 result.c = "{{ data }}"
 "#,
         ),
@@ -182,7 +182,7 @@ fn removing_a_file_removes_what_it_added() {
         ("config.toml", BASE),
         (
             "conf.d/10-more.toml",
-            "[daemon.providers.demo.sources.t]\ndata = \"{{ exec('echo more') | trim }}\"\n\
+            "[daemon.providers.demo.sources.t]\ndata = \"{{ _.exec('echo more') | trim }}\"\n\
              result.c = \"{{ data }}\"\n\
              [daemon.providers.demo.sources.s]\nresult.b = \"{{ data }}-more\"\n",
         ),
@@ -233,7 +233,7 @@ fn a_data_line_reads_a_put_over_another_providers_source() {
         "config.toml",
         r#"
 [daemon.providers.one.sources.s]
-data = "{{ exec('echo src') | trim }}"
+data = "{{ _.exec('echo src') | trim }}"
 result.x = "{{ data }}"
 
 [daemon.providers.two.sources.s]
@@ -264,7 +264,7 @@ fn a_data_line_reads_providers_by_plain_name() {
         "config.toml",
         r#"
 [daemon.providers.one.sources.s]
-data = "{{ exec('echo src') | trim }}"
+data = "{{ _.exec('echo src') | trim }}"
 result.x = "{{ data }}"
 
 [daemon.providers.daemon.sources.s]
@@ -292,7 +292,7 @@ fn a_data_line_reading_a_cold_provider_runs_it() {
         "config.toml",
         r#"
 [daemon.providers.up.sources.s]
-data = "{{ exec('echo upstream') | trim }}"
+data = "{{ _.exec('echo upstream') | trim }}"
 result.v = "{{ data }}"
 
 [daemon.providers.down.sources.s]
@@ -304,7 +304,7 @@ data = "{{ comb['up2'].v }}"
 result.v = "{{ data }}?"
 
 [daemon.providers.up2.sources.s]
-data = "{{ exec('echo second') | trim }}"
+data = "{{ _.exec('echo second') | trim }}"
 result.v = "{{ data }}"
 "#,
     )]);
@@ -349,7 +349,7 @@ fn data_runs_at_refresh_not_at_load() {
         "config.toml",
         r#"
 [daemon.providers.demo.sources.s]
-data = "{{ exec('echo run >> ' ~ env.HOME ~ '/count; echo hi') | trim }}"
+data = "{{ _.exec('echo run >> ' ~ env.HOME ~ '/count; echo hi') | trim }}"
 result.v = "{{ data }}"
 "#,
     )]);
@@ -406,8 +406,8 @@ fn a_root_line_picks_the_instance_and_none_is_the_home_instance() {
         "config.toml",
         r#"
 [daemon.providers.demo.sources.s]
-root = "{{ lup('marker') | dirname }}"
-data = "{{ exec('pwd') | trim }}"
+root = "{{ _.lup('marker') | dirname }}"
+data = "{{ _.exec('pwd') | trim }}"
 result.cwd = "{{ data }}"
 "#,
     )]);
@@ -458,7 +458,7 @@ fn a_source_with_no_root_line_is_the_home_instance() {
         "config.toml",
         r#"
 [daemon.providers.demo.sources.s]
-data = "{{ exec('pwd') | trim }}"
+data = "{{ _.exec('pwd') | trim }}"
 result.cwd = "{{ data }}"
 "#,
     )]);
@@ -525,8 +525,8 @@ fn root_runs_per_directory_on_first_request_and_is_cached() {
         // directory the instance answers for.
         r#"
 [daemon.providers.demo.sources.s]
-root = "{{ exec('echo run >> ' ~ env.HOME ~ '/roots; echo ' ~ env.HOME ~ '/proj') | trim }}"
-data = "{{ exec('pwd') | trim }}"
+root = "{{ _.exec('echo run >> ' ~ env.HOME ~ '/roots; echo ' ~ env.HOME ~ '/proj') | trim }}"
+data = "{{ _.exec('pwd') | trim }}"
 result.cwd = "{{ data }}"
 "#,
     )]);
@@ -572,8 +572,8 @@ fn return_decorators_register_at_instance_creation_not_at_load() {
         "config.toml",
         r#"
 [daemon.providers.demo.sources.s]
-root = "{{ lup('marker') | dirname }}"
-data = "{{ exec('pwd') | trim }}"
+root = "{{ _.lup('marker') | dirname }}"
+data = "{{ _.exec('pwd') | trim }}"
 result.cwd = "{{ data }}"
 return = "{{ result | watch('marker') | poll('1h') }}"
 "#,
@@ -609,13 +609,13 @@ fn two_config_sources_of_one_provider_root_independently() {
         "config.toml",
         r#"
 [daemon.providers.demo.sources.a]
-root = "{{ lup('ma') | dirname }}"
-data = "{{ exec('pwd') | trim }}"
+root = "{{ _.lup('ma') | dirname }}"
+data = "{{ _.exec('pwd') | trim }}"
 result.cwd_a = "{{ data }}"
 
 [daemon.providers.demo.sources.b]
-root = "{{ lup('mb') | dirname }}"
-data = "{{ exec('pwd') | trim }}"
+root = "{{ _.lup('mb') | dirname }}"
+data = "{{ _.exec('pwd') | trim }}"
 result.cwd_b = "{{ data }}"
 "#,
     )]);
@@ -654,8 +654,8 @@ fn a_config_source_walks_to_the_home_instance() {
         // The whole node is whatever `vals.json` in the working directory says.
         r#"
 [daemon.providers.demo.sources.s]
-root = "{{ lup('vals.json') | dirname }}"
-data = "{{ exec('cat vals.json 2>/dev/null || echo {}') | fromjson }}"
+root = "{{ _.lup('vals.json') | dirname }}"
+data = "{{ _.exec('cat vals.json 2>/dev/null || echo {}') | fromjson }}"
 result = "{{ data }}"
 "#,
     )]);
@@ -695,8 +695,8 @@ fn vals_config(provider: &str, nearest: bool) -> String {
     format!(
         r#"
 [daemon.providers.{provider}.sources.s]
-root = "{{{{ lup('vals.json') | dirname }}}}"
-data = "{{{{ exec('cat vals.json') | fromjson }}}}"
+root = "{{{{ _.lup('vals.json') | dirname }}}}"
+data = "{{{{ _.exec('cat vals.json') | fromjson }}}}"
 result = "{{{{ data }}}}"
 return = "{{{{ result | watch('vals.json'){decorator} }}}}"
 "#
@@ -760,7 +760,7 @@ fn a_nearest_config_source_whose_root_renders_none_has_no_instance() {
             vals_config("near", true),
             r#"
 [daemon.providers.casc.sources.s]
-root = "{{ lup('vals.json') | dirname }}"
+root = "{{ _.lup('vals.json') | dirname }}"
 data = "{{ 1 }}"
 result.z = "ran"
 "#
@@ -798,8 +798,8 @@ fn a_root_line_that_fails_to_render_fails_the_read_with_its_error() {
         "config.toml",
         r#"
 [daemon.providers.demo.sources.s]
-root = "{{ exec('false') }}"
-data = "{{ exec('pwd') | trim }}"
+root = "{{ _.exec('false') }}"
+data = "{{ _.exec('pwd') | trim }}"
 result.cwd = "{{ data }}"
 "#,
     )]);
@@ -842,7 +842,7 @@ fn a_url_source_serves_the_fetched_field() {
         &format!(
             r#"
 [daemon.providers.claude.sources.summary]
-data = "{{{{ url('{}/summary.json') | fromjson }}}}"
+data = "{{{{ _.url('{}/summary.json') | fromjson }}}}"
 result.indicator = "{{{{ data.status.indicator }}}}"
 return = "{{{{ result | poll('60s') }}}}"
 "#,
@@ -867,10 +867,10 @@ fn link_plugin(dir: &Path, name: &str) {
 
 const PLUGIN_SOURCE: &str = r#"
 [daemon.providers.lib.sources.s]
-data = "{{ plugin('demo', 'bc_echo_args', 'x', 2) }}"
+data = "{{ _.plugin('demo', 'bc_echo_args', 'x', 2) }}"
 result.first = "{{ data[0] }}"
 result.second = "{{ data[1] }}"
-result.sum = "{{ plugin('demo', 'bc_sum', 1, 2) }}"
+result.sum = "{{ _.plugin('demo', 'bc_sum', 1, 2) }}"
 "#;
 
 #[test]
@@ -898,8 +898,8 @@ fn plugin_looks_in_the_config_directorys_plugins_by_default() {
 /// the nearest `.root` marker.
 const OBJ_SOURCE: &str = r#"
 [daemon.providers.obj.sources.s]
-root = "{{ lup('.root') | dirname }}"
-data = "{{ exec('cat vals.json') | fromjson }}"
+root = "{{ _.lup('.root') | dirname }}"
+data = "{{ _.exec('cat vals.json') | fromjson }}"
 result = "{{ data }}"
 "#;
 
@@ -952,12 +952,12 @@ fn a_nearer_root_beats_the_home_instance_of_a_rootless_sibling_source() {
         "config.toml",
         r#"
 [daemon.providers.p.sources.a]
-root = "{{ lup('.root') | dirname }}"
-data = "{{ exec('cat a.json') | fromjson }}"
+root = "{{ _.lup('.root') | dirname }}"
+data = "{{ _.exec('cat a.json') | fromjson }}"
 result = "{{ data }}"
 
 [daemon.providers.p.sources.b]
-data = "{{ exec('cat b.json') | fromjson }}"
+data = "{{ _.exec('cat b.json') | fromjson }}"
 result = "{{ data }}"
 "#,
     )]);
@@ -992,8 +992,8 @@ fn refresh_re_runs_every_instance_a_force_get_re_runs() {
         &format!(
             r#"
 [daemon.providers.cnt.sources.s]
-root = "{{{{ lup('.root') | dirname }}}}"
-data = "{{{{ exec('pwd >> {}; cat vals.json') | fromjson }}}}"
+root = "{{{{ _.lup('.root') | dirname }}}}"
+data = "{{{{ _.exec('pwd >> {}; cat vals.json') | fromjson }}}}"
 result = "{{{{ data }}}}"
 "#,
             count.display()
@@ -1049,8 +1049,8 @@ fn a_failing_source_in_backoff_is_skipped_not_re_run_on_every_read() {
         &format!(
             r#"
 [daemon.providers.bad.sources.s]
-root = "{{{{ exec('pwd') | trim }}}}"
-data = "{{{{ exec('pwd >> {}; false') }}}}"
+root = "{{{{ _.exec('pwd') | trim }}}}"
+data = "{{{{ _.exec('pwd >> {}; false') }}}}"
 result.x = "{{{{ data }}}}"
 return = "{{{{ result | failback('1h', 1) }}}}"
 "#,
@@ -1098,12 +1098,12 @@ fn the_home_instance_of_mise_watches_the_config_file_in_home() {
 /// Two Sources of one provider, each with a field of its own.
 const TWO_SOURCES: &str = r#"
 [daemon.providers.demo.sources.one]
-data = "{{ exec('echo 1') | trim }}"
+data = "{{ _.exec('echo 1') | trim }}"
 result.a = "{{ data }}-a"
 result.b = "{{ data }}-b"
 
 [daemon.providers.demo.sources.two]
-data = "{{ exec('echo 2') | trim }}"
+data = "{{ _.exec('echo 2') | trim }}"
 result.c = "{{ data }}-c"
 "#;
 
@@ -1127,15 +1127,15 @@ fn explicit_merge_last_wins() {
         "config.toml",
         r#"
 [daemon.providers.demo]
-result = "{{ merge(sources.first(), sources.second()) }}"
+result = "{{ _.merge(sources.first(), sources.second()) }}"
 
 [daemon.providers.demo.sources.first]
-data = "{{ exec('echo f') | trim }}"
+data = "{{ _.exec('echo f') | trim }}"
 result.x = "{{ data }}"
 result.only_first = "{{ data }}"
 
 [daemon.providers.demo.sources.second]
-data = "{{ exec('echo s') | trim }}"
+data = "{{ _.exec('echo s') | trim }}"
 result.x = "{{ data }}"
 "#,
     )]);
@@ -1146,11 +1146,11 @@ result.x = "{{ data }}"
 
 const TEMPLATED: &str = r#"
 [daemon.providers.demo.sources.s]
-data = "{{ exec('echo d') | trim }}"
+data = "{{ _.exec('echo d') | trim }}"
 result.a = "{{ data }}"
 
 [daemon.providers.other.sources.s]
-data = "{{ exec('echo o') | trim }}"
+data = "{{ _.exec('echo o') | trim }}"
 result.a = "{{ data }}"
 
 [client.providers.demo]
@@ -1324,7 +1324,7 @@ fn a_field_a_result_line_drops_does_not_rerun_its_source_on_every_read() {
 result = "{{{{ {{'kept': 1}} }}}}"
 
 [daemon.providers.drop.sources.one]
-data = "{{{{ exec(['sh', '-c', 'echo run >> {} ; echo 5']) | trim }}}}"
+data = "{{{{ _.exec(['sh', '-c', 'echo run >> {} ; echo 5']) | trim }}}}"
 result.a = "{{{{ data }}}}"
 "#,
             count.display()
@@ -1435,7 +1435,7 @@ data = "{{ 2 }}"
 result.mine = "{{ data }}"
 
 [daemon.providers.layered]
-result = "{{ merge(sources) | merge(daemon.providers.gitstats.sources.repo()) }}"
+result = "{{ _.merge(sources) | merge(daemon.providers.gitstats.sources.repo()) }}"
 
 [daemon.providers.layered.sources.own]
 data = "{{ 3 }}"
@@ -1464,7 +1464,7 @@ fn a_cold_source_call_executes_once_inline() {
     let from_return = setup.home.join("from_return.count");
     let body = |count: &Path| {
         format!(
-            "{{{{ exec(['sh', '-c', 'echo run >> {} ; echo 5']) | trim }}}}",
+            "{{{{ _.exec(['sh', '-c', 'echo run >> {} ; echo 5']) | trim }}}}",
             count.display()
         )
     };
@@ -1481,7 +1481,7 @@ data = "{data_body}"
 result.v = "{{{{ data }}}}"
 
 [daemon.providers.c]
-return = "{{{{ merge(daemon.providers.d.sources.u(), daemon.providers.d.sources.u()) }}}}"
+return = "{{{{ _.merge(daemon.providers.d.sources.u(), daemon.providers.d.sources.u()) }}}}"
 
 [daemon.providers.c.sources.own]
 data = "{{{{ 1 }}}}"
@@ -1510,7 +1510,7 @@ result.w = "{{{{ data }}}}"
 /// many runs there have been.
 fn counting_source(count: &Path) -> String {
     format!(
-        "data = \"{{{{ exec(['sh', '-c', 'echo run >> {c} ; wc -l < {c}']) | trim }}}}\"\nresult.v = \"{{{{ data }}}}\"\n",
+        "data = \"{{{{ _.exec(['sh', '-c', 'echo run >> {c} ; wc -l < {c}']) | trim }}}}\"\nresult.v = \"{{{{ data }}}}\"\n",
         c = count.display()
     )
 }
@@ -1624,7 +1624,7 @@ fn a_refresh_runs_a_shared_cold_source_once() {
         &format!(
             r#"
 [daemon.providers.shared.sources.t]
-data = "{{{{ exec(['sh', '-c', 'while [ ! -e {go} ]; do sleep 0.01; done; echo run >> {count}; echo 1']) | trim }}}}"
+data = "{{{{ _.exec(['sh', '-c', 'while [ ! -e {go} ]; do sleep 0.01; done; echo run >> {count}; echo 1']) | trim }}}}"
 result.v = "{{{{ data }}}}"
 
 [daemon.providers.callers.sources.one]
@@ -1707,7 +1707,7 @@ fn a_watch_wakes_when_a_source_its_lines_call_changes() {
         &format!(
             r#"
 [daemon.providers.tick.sources.t]
-data = "{{{{ exec(['sh', '-c', 'echo run >> {}; wc -l < {}']) | trim }}}}"
+data = "{{{{ _.exec(['sh', '-c', 'echo run >> {}; wc -l < {}']) | trim }}}}"
 result.n = "{{{{ data }}}}"
 
 [daemon.providers.seen]
@@ -1741,7 +1741,7 @@ fn a_called_nearest_source_answers_from_its_nearest_root_alone() {
         &format!(
             r#"{}
 [daemon.providers.rep.sources.c]
-root = "{{{{ lup('.here') | dirname }}}}"
+root = "{{{{ _.lup('.here') | dirname }}}}"
 data = "{{{{ daemon.providers.near.sources.s() }}}}"
 result = "{{{{ data }}}}"
 
@@ -1772,7 +1772,7 @@ fn a_called_sources_own_failure_is_the_callers_miss() {
         "config.toml",
         r#"
 [daemon.providers.bad.sources.t]
-data = "{{ exec('exit 3') }}"
+data = "{{ _.exec('exit 3') }}"
 result.v = "{{ data }}"
 return = "{{ result | failback('1h', 1) }}"
 
@@ -1815,7 +1815,7 @@ fn a_call_goes_on_up_the_chain_past_an_instance_that_fails() {
         &format!(
             r#"{}
 [daemon.providers.rep.sources.c]
-root = "{{{{ lup('.here') | dirname }}}}"
+root = "{{{{ _.lup('.here') | dirname }}}}"
 data = "{{{{ daemon.providers.demo.sources.s() }}}}"
 result = "{{{{ data }}}}"
 "#,
@@ -1849,7 +1849,7 @@ fn get_force_runs_the_sources_a_providers_lines_call_again() {
         &format!(
             r#"
 [daemon.providers.tick.sources.t]
-data = "{{{{ exec(['sh', '-c', 'echo run >> {}; wc -l < {}']) | trim }}}}"
+data = "{{{{ _.exec(['sh', '-c', 'echo run >> {}; wc -l < {}']) | trim }}}}"
 result.n = "{{{{ data }}}}"
 
 [daemon.providers.seen]
@@ -1878,7 +1878,7 @@ return = "{{{{ daemon.providers.tick.sources.t() }}}}"
 /// A Source that appends a line to `count` each time it runs, and nothing else.
 fn tally_source(count: &Path) -> String {
     format!(
-        "data = \"{{{{ exec(['sh', '-c', 'echo run >> {c} ; echo 1']) | trim }}}}\"\nresult.v = \"{{{{ data }}}}\"\n",
+        "data = \"{{{{ _.exec(['sh', '-c', 'echo run >> {c} ; echo 1']) | trim }}}}\"\nresult.v = \"{{{{ data }}}}\"\n",
         c = count.display()
     )
 }
@@ -2082,7 +2082,7 @@ fn a_disabled_provider_with_a_result_of_its_own_is_still_disabled() {
             r#"
 [daemon.providers.q]
 enabled = false
-result = "{{{{ merge(sources) }}}}"
+result = "{{{{ _.merge(sources) }}}}"
 
 [daemon.providers.q.sources.s]
 {}"#,
@@ -2109,7 +2109,7 @@ enabled = false
 [daemon.providers.off.sources.s]
 {}
 [daemon.providers.caller]
-result = "{{{{ merge(sources) | merge(daemon.providers.off.sources.s()) }}}}"
+result = "{{{{ _.merge(sources) | merge(daemon.providers.off.sources.s()) }}}}"
 
 [daemon.providers.caller.sources.own]
 data = "{{{{ 2 }}}}"

@@ -47,7 +47,7 @@ pub fn apply_filters(rows: Vec<CacheRow>, filters: &[String]) -> Result<Vec<Cach
 }
 
 /// Whether `provider` (a base name) could survive every `provider` filter
-/// in `filters`. Used to skip resolving (and `exec()`ing) a template row's
+/// in `filters`. Used to skip resolving (and `_.exec()`ing) a template row's
 /// leaves before rendering, when `--filter provider` has already ruled the
 /// provider out — `apply_filters` runs the real, authoritative filter
 /// afterward, over the rendered rows, so a filter string this can't parse or

@@ -88,6 +88,11 @@ schema.migrate = false
 - `comb migrate [FILE…] [--dry-run]` migrates by hand and prints a diff of each file.
 - `defaults/` files are comb's own and are not migrated.
 
+| schema | comb | what changed |
+|---|---|---|
+| 1 | before 0.11.0 | — |
+| 2 | 0.11.0 | comb's functions are called through `_`: each call in a template string is rewritten (`lup(...)` to `_.lup(...)`, `log.warn(...)` to `_.log.warn(...)`), filters and everything else in the file left as they are. Stored `:template` and `:macro` puts are rewritten when the daemon reads them back |
+
 ## Roots
 
 A file has two top-level tables (and its [`schema`](#schema-and-migration)). Anything else at the top level is an error.
@@ -128,7 +133,7 @@ env_file = "~/.secrets/comb.env"
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `path` | list of directories, each absolute or `~/` | `["<config dir>/plugins"]` | Where `plugin(name, …)` looks for `lib<name>.dylib` or `lib<name>.so`, in order. A later file's list replaces the earlier one |
+| `path` | list of directories, each absolute or `~/` | `["<config dir>/plugins"]` | Where `_.plugin(name, …)` looks for `lib<name>.dylib` or `lib<name>.so`, in order. A later file's list replaces the earlier one |
 
 ```toml
 [daemon.plugin]
@@ -168,14 +173,14 @@ The shipped abstract provider, in `defaults/00-comb.toml`:
 ```toml
 [daemon.providers._]
 template = "{{ client.providers[_.name].template }}"
-result   = "{{ merge(sources) }}"
+result   = "{{ _.merge(sources) }}"
 return   = "{{ result | facet('template', template) }}"
 ```
 
 | Line | Runs | Sees | Gives |
 |---|---|---|---|
 | `template` | when facets are seeded, once per file | `client` (that file's `[client]` tree), `_` | a table of template leaves: the `:template` facet |
-| `result` | on a read, at each directory it reaches | `sources`, `daemon`, `_` | the provider's data there. `merge(sources)` merges every Source's record; `sources.<s>()` is one Source's |
+| `result` | on a read, at each directory it reaches | `sources`, `daemon`, `_` | the provider's data there. `_.merge(sources)` merges every Source's record; `sources.<s>()` is one Source's |
 | `return` | once per read | `result`, `template`, `daemon`, `_` | the answer. `\| facet('template', template)` attaches the template half |
 
 - `_.name` is the provider the line applies to.
@@ -185,7 +190,7 @@ return   = "{{ result | facet('template', template) }}"
   errors in them.
 - Under any `result` or `return` other than the shipped ones, a field read runs every Source of the provider.
 - With the default `result`, two Sources of one provider may not declare the same field. A `result` that names them,
-  `merge(sources.a(), sources.b())`, chooses the order, and the last wins.
+  `_.merge(sources.a(), sources.b())`, chooses the order, and the last wins.
 - A line that fails to render makes the read a miss, logged once.
 - `facet(name, value)` takes `template`, `macro`, `memo`, `put`, `source` or `cache`; only `template` is read off a
   `return`.
@@ -217,7 +222,7 @@ of `<p>`, and `[daemon.providers._.sources._]` to every Source of every provider
 
 | Line | Type | Required | Sees | Meaning |
 |---|---|---|---|---|
-| `root` | jinja line | no | `env`, `_` | The directory an instance answers for, usually `{{ lup('<marker>') \| dirname }}`. Empty or none: one instance at `~`. Under `nearest`, none means no instance. `exec`, `url` and `plugin` are allowed here, but comb warns: the line runs again for each new directory resolved, so prefer `lup()` |
+| `root` | jinja line | no | `env`, `_` | The directory an instance answers for, usually `{{ _.lup('<marker>') \| dirname }}`. Empty or none: one instance at `~`. Under `nearest`, none means no instance. `exec`, `url` and `plugin` are allowed here, but comb warns: the line runs again for each new directory resolved, so prefer `_.lup()` |
 | `data` | jinja line | yes | `env`, `comb`, `sources`, `daemon`, `_`, and any provider by name | The body, run in the daemon with the root as working directory. Can call every engine function, `exec`, `url` and `plugin` included (so can `root` and `result`; put the work here so it runs once and every `result` shares it) |
 | `result` | jinja line, or a table of them | yes | `data`, `_` | `result = "{{ data }}"` makes the whole value the provider's node; `result.<field> = "…"` declares fields one by one |
 | `return` | jinja line | no | `result`, `_` | The schedule: `result` piped through [decorators](#return-decorators) |
@@ -238,13 +243,13 @@ of `<p>`, and `[daemon.providers._.sources._]` to every Source of every provider
 - The shipped default is `[daemon.providers._.sources._] return = "{{ result | poll('60s', 12) | failback('1s', 3) }}"`.
 - Any other key is an error.
 
-The functions and filters `data` and `result` can call are in the [Template Library](./template-library.md); `url()`'s
+The functions and filters `data` and `result` can call are in the [Template Library](./template-library.md); `_.url()`'s
 arguments are in [From an HTTP API](../custom-providers/from-an-http-api.md#url-arguments). `cache()`, and `watch()` and
 `ttl()` as filters, are client-template items and a load error here.
 
 ```toml
 [daemon.providers.pkg.sources.main]
-root = "{{ lup('package.json') | dirname }}"
+root = "{{ _.lup('package.json') | dirname }}"
 data = "{{ 'package.json' | read | fromjson }}"
 result.name = "{{ data.name }}"
 result.version = "{{ data.version }}"

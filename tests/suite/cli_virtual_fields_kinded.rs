@@ -80,7 +80,7 @@ fn a_bare_name_is_a_dynamic_ref_and_a_function_is_none() {
         vec![Ref::Dynamic("somename".into())]
     );
     assert_eq!(
-        discover_refs("{{ lup('.git') }}{{ merge({}, {}) }}"),
+        discover_refs("{{ _.lup('.git') }}{{ _.merge({}, {}) }}"),
         Vec::<Ref>::new()
     );
 }

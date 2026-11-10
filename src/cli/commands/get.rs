@@ -3,7 +3,7 @@
 //! `comb get` is a client of [`libbeachcomber::resolve`]. It parses keys, a
 //! path and a format, makes sure the daemon is running, and hands every key to
 //! the library's one resolver with this process's environment and directory
-//! and `exec()` enabled. Nothing here decides what a key is worth: a template
+//! and `_.exec()` enabled. Nothing here decides what a key is worth: a template
 //! the daemon holds is rendered in the library, a cached value comes back as
 //! it is, `env.*` is answered from the environment. This module only renders
 //! what comes back, per output format, and then writes back the memos the

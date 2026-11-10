@@ -91,7 +91,7 @@ mod tests {
             merged(json!({"l": [1, 2, 3]}), json!({"l": [4]})),
             json!({"l": [4]})
         );
-        // Null is a value to this merge, not a removal (that is `merge()`'s).
+        // Null is a value to this merge, not a removal (that is `_.merge()`'s).
         assert_eq!(
             merged(json!({"a": 1}), json!({"a": null})),
             json!({"a": null})

@@ -1,6 +1,6 @@
 # scanline fixtures
 
-What scanline's pre-phase-6 config drew, recorded so phase 6 can be held to it: `bars.json` for `bar()` byte for byte
+What scanline's pre-phase-6 config drew, recorded so phase 6 can be held to it: `bars.json` for `_.bar()` byte for byte
 (`library::bar::tests::every_recorded_painter_row_is_painted_byte_for_byte`), and `cells.json` for the phase-6 config
 cell for cell (`tests/suite/scanline.rs`).
 
@@ -17,7 +17,7 @@ cell for cell (`tests/suite/scanline.rs`).
 - **Rows.** Each row has the painter's `segs` (labels reduced to their text, colours and bold), the `width` of the row,
   and the `bytes` the painter drew. Rows with the same segments and width appear once.
 - **`bar_bytes`.** One row, `A/W/model/22`, has a marker on the first column of a wide glyph. The painter replaced the
-  glyph and dropped a column; `bar()` keeps the row its width. `bar_bytes` is the painter's bytes with that column
+  glyph and dropped a column; `_.bar()` keeps the row its width. `bar_bytes` is the painter's bytes with that column
   restored and one trailing blank removed.
 
 ## `10-scanline.toml`, `states.json` and `cells.json`
@@ -33,9 +33,9 @@ cell for cell (`tests/suite/scanline.rs`).
 - **`cells.json`** `rows` is what the section 3.2 file drew for every widget at every state and width set, 216 rows
   named `<state>/<set>/<widget>/<width>`, each as runs of `[characters, look]`. A look is the SGR state the characters
   were drawn in: `b`, `d`, `i`, `u`, `r` (bold, dim, italic, underline, invert), `fg=` and `bg=` (`#rrggbb`).
-- **Method.** The section 3.2 file (the harness's `sandbox/new` copy but for its local `url()` host) rendered in
+- **Method.** The section 3.2 file (the harness's `sandbox/new` copy but for its local `_.url()` host) rendered in
   process on `feat/one-tree` at `747d818`, through the same map `Fetch` as the test, with `COLORTERM=truecolor`,
-  `TERM=xterm-256color`, `scanline.now` in the put, and its own daemon lines run over the same bodies with `url()`
+  `TERM=xterm-256color`, `scanline.now` in the put, and its own daemon lines run over the same bodies with `_.url()`
   answered by them. The 216 renders are byte-identical to the private-daemon renders of scanline-one-tree section
   3.5's validation, and the harness's `oldbench compare` (scanline's own parser and engine, on the pre-one-tree
   `10-scanline.toml`) finds them cell-identical to what scanline drew before one-tree.

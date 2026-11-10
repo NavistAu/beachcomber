@@ -88,22 +88,22 @@ An edit under `providers` reloads in place. Read a shipped file to see how one i
 `git` is `defaults/git.toml`, five Sources with different strategies, sharing one `root` line in their `_` prototype. All get their data from the compiled-in `git` plugin (§8):
 
 ```
-git.head    → watch .git/HEAD, `plugin('git', 'head', root)`, no subprocess
+git.head    → watch .git/HEAD, `_.plugin('git', 'head', root)`, no subprocess
               fields: branch, detached
 
-git.refs    → watch what the refs, the stash and an operation in progress live in, `plugin('git', 'refs', root)`
+git.refs    → watch what the refs, the stash and an operation in progress live in, `_.plugin('git', 'refs', root)`
               fields: commit, tag, state, state_step, state_total,
                       stash, last_commit_timestamp, commit_summary, push_ahead, push_behind
 
-git.diff    → poll 30s, `plugin('git', 'diff', root)`
+git.diff    → poll 30s, `_.plugin('git', 'diff', root)`
               fields: lines_added, lines_removed, lines_staged_added, lines_staged_removed
 
-git.branches → watch the refs, `plugin('git', 'branches', root)`
-git.lineage → watch the refs, `plugin('git', 'lineage', root)`
+git.branches → watch the refs, `_.plugin('git', 'branches', root)`
+git.lineage → watch the refs, `_.plugin('git', 'lineage', root)`
               fields: branch_parent, lines_added_parent, lines_removed_parent,
                       branch_default, lines_added_default, lines_removed_default
 
-git.status  → watch the index and the refs + poll 60s, `plugin('git', 'status', root)`
+git.status  → watch the index and the refs + poll 60s, `_.plugin('git', 'status', root)`
               fields: upstream, ahead, behind, staged, unstaged, untracked, conflicted, dirty
 ```
 
@@ -160,14 +160,14 @@ A record's inputs are the paths its `watch(...)` declares (each relative one joi
 | item | what it reads |
 |---|---|
 | `p \| read`, `p \| stat`, `p \| realpath` | the path |
-| `lup(name)` | every path its walk probed, each for its presence: `<dir>/<name>` from the instance's directory up to the hit (to the boundary when there is none, or with `all`); with `git=true`, each `<dir>/.git` it read to find the repository's root. A miss is read too: a `name` made nearer is a change. A hit changes when it goes, or becomes another kind of thing: not when an entry comes and goes in a directory it found. `lup('x') \| read` checks the file's contents as well, by the `read` |
+| `_.lup(name)` | every path its walk probed, each for its presence: `<dir>/<name>` from the instance's directory up to the hit (to the boundary when there is none, or with `all`); with `git=true`, each `<dir>/.git` it read to find the repository's root. A miss is read too: a `name` made nearer is a change. A hit changes when it goes, or becomes another kind of thing: not when an entry comes and goes in a directory it found. `_.lup('x') \| read` checks the file's contents as well, by the `read` |
 | `pattern \| glob` | each directory it listed, as a node (an entry made, removed or renamed in it is a change), and each literal component it found missing or ended on. A directory passed through on the way is not: what the glob read below it is |
 
 ```toml
 [daemon.providers.flag.sources.s]
-root   = "{{ lup('.flagroot') | dirname }}"
+root   = "{{ _.lup('.flagroot') | dirname }}"
 # checked: every state.json probe, and the one read
-data   = "{{ lup('state.json') | read }}"
+data   = "{{ _.lup('state.json') | read }}"
 result.v = "{{ data }}"
 # no watch() needed for a read to see a rewrite
 return = "{{ result | poll('10m') }}"
@@ -254,7 +254,7 @@ return = '''{{ result
 Three things a Source relies on beyond its own table:
 
 - **Prototypes.** A table named `_` (`[daemon.providers.<p>.sources._]` for one provider's Sources, `[daemon.providers._.sources._]` for all) holds defaults. A Source's own `root`, `data`, `result` or `return` line wins whole; an absent line takes the nearest `_`'s; `| super` on a `return` extends the `_` line instead of replacing it. The abstract Source (`poll('60s', 12) | failback('1s', 3)`) ships in `defaults/00-comb.toml`.
-- **The engine.** `data` can call `exec`, `url`, `plugin`, `read`, `stat`, `lup`, `fromjson`, `fromini`, `merge`, `map` over objects, `pluck`, `dirname` and `tojson` (the table is in the configuration reference). An `exec` string is run by `sh -c`, so `$BAR` in it is invisible to the engine, and to a future `cache()` hash of the line: prefer `exec('cmd ' ~ env.bar)`.
+- **The engine.** `data` can call `exec`, `url`, `plugin`, `read`, `stat`, `lup`, `fromjson`, `fromini`, `merge`, `map` over objects, `pluck`, `dirname` and `tojson` (the table is in the configuration reference). An `exec` string is run by `sh -c`, so `$BAR` in it is invisible to the engine, and to a future `cache()` hash of the line: prefer `_.exec('cmd ' ~ env.bar)`.
 - **Calling a Source.** `sources.<s>()` reads a sibling's stored record and `daemon.providers.<q>.sources.<s>()` any provider's. A Source with nothing stored is run inline, once, by the read or refresh that needs it (a cold call); a ring of Sources calling each other is a load error; a called Source stays warm and decays with its callers. A caller is as fresh as what it calls: when a callee's input changes, or the callee is stored with a new value, the next read of the caller runs it again.
 
 A provider is switched off with `[daemon.providers.<p>] enabled = false`: no Source of it runs, a read is a miss with no template half, and puts under it stay readable. An edit under `providers` reloads in place; only the bare `[daemon]` and `[client]` keys restart the daemon. Decay depth is data (`[daemon.providers._.cache._] decay = 4` ships), settable per provider or by `put`.
@@ -277,16 +277,16 @@ A Source runs on tokio's blocking thread pool. A slow one delays cache freshness
 |---|---|---|---|
 | A file's lines | about 90-170 µs | `hostname`, `user`, `load`, `uptime`, `gcloud_configs` | The engine, the lines, a `sys` call or a file read; no process |
 | One process | 3-12 ms | `network`, `battery` | One spawn, inside `sys` |
-| Commands | 10-50 ms | `mise`, `direnv` (with binary), Sources that call `exec()` | Multiple spawns or an interpreted CLI |
+| Commands | 10-50 ms | `mise`, `direnv` (with binary), Sources that call `_.exec()` | Multiple spawns or an interpreted CLI |
 | A repository's worth | 16-64 ms per Source | `git`'s `status`, `diff`, `lineage`, `refs` | One `git` process per fact, through the plugin; `head` none |
 
 **Rule 1: Never run a process when you can read a file.**
 
-A process costs 2-6 ms at least; a file read costs microseconds. Before reaching for `exec()`, ask: does this tool write its state to a file I can parse?
+A process costs 2-6 ms at least; a file read costs microseconds. Before reaching for `_.exec()`, ask: does this tool write its state to a file I can parse?
 
 ```toml
 # Bad: a process for a value that is on disk
-data = "{{ exec('gcloud config get-value project') }}"
+data = "{{ _.exec('gcloud config get-value project') }}"
 # Good: read the file the tool reads
 data = "{{ '~/.config/gcloud/configurations/config_default' | read | fromini }}"
 ```
@@ -335,19 +335,19 @@ For testing, keep the platform's text handling pure and put it in `sys/parse.rs`
 
 ## 8. Plugins
 
-A plugin is a shared library (`.so` on Linux, `.dylib` on macOS). A Source's `data` line can call into one with the daemon's `plugin(name, symbol, args...)` function. This avoids the per-run process spawn of `exec()` while letting the logic be written in any language that can export C symbols. A plugin is a function, not a provider: the Source around it declares the fields, the schedule and the root, as for any other Source.
+A plugin is a shared library (`.so` on Linux, `.dylib` on macOS). A Source's `data` line can call into one with the daemon's `_.plugin(name, symbol, args...)` function. This avoids the per-run process spawn of `_.exec()` while letting the logic be written in any language that can export C symbols. A plugin is a function, not a provider: the Source around it declares the fields, the schedule and the root, as for any other Source.
 
 ### Calling a plugin
 
 ```toml
 [daemon.providers.hello.sources.main]
-data = "{{ plugin('hello', 'greet', 'world') }}"
+data = "{{ _.plugin('hello', 'greet', 'world') }}"
 result.greeting = "{{ data }}"
 ```
 
-`plugin(name, symbol, args...)` calls `symbol` in the library `name` with `args` and returns the library's JSON result, parsed (a map, list, string, number, bool or null). The call blocks the Source's run for as long as the library takes.
+`_.plugin(name, symbol, args...)` calls `symbol` in the library `name` with `args` and returns the library's JSON result, parsed (a map, list, string, number, bool or null). The call blocks the Source's run for as long as the library takes.
 
-- A `name` without a `/` is looked up as `lib<name>.dylib` (macOS) or `lib<name>.so` (Linux) in each directory of `[daemon.plugin] path`, in order; the first directory holding the file wins. `plugin('hello', ...)` loads `libhello.so` or `libhello.dylib`. Not found, it is an error naming the file and the directories searched: `plugin(): libhello.so not found on [daemon.plugin] path (/home/me/.config/beachcomber/plugins)`.
+- A `name` without a `/` is looked up as `lib<name>.dylib` (macOS) or `lib<name>.so` (Linux) in each directory of `[daemon.plugin] path`, in order; the first directory holding the file wins. `_.plugin('hello', ...)` loads `libhello.so` or `libhello.dylib`. Not found, it is an error naming the file and the directories searched: `_.plugin(): libhello.so not found on [daemon.plugin] path (/home/me/.config/beachcomber/plugins)`.
 - A `name` containing a `/` is the library path as given: absolute, or `~/...` (expanded from the daemon's `HOME`). A relative path is an error.
 - A library is loaded on the first call that names it and stays loaded for the daemon's life. The daemon does not look at the file again: a name keeps the library it first loaded, even if another appears earlier on `path`; a name first used after a rebuild loads the rebuilt file; restart the daemon to move every name. Names that reach the same file (a symlink, a hard link) share one loaded library.
 
@@ -366,9 +366,9 @@ Every symbol is the same function type:
 const char* symbol(const char* input);
 ```
 
-- `input` is the call's arguments as a NUL-terminated JSON array: `plugin('hello', 'greet', 'world', 3)` passes `["world",3]`.
+- `input` is the call's arguments as a NUL-terminated JSON array: `_.plugin('hello', 'greet', 'world', 3)` passes `["world",3]`.
 - The return value is a NUL-terminated JSON value (UTF-8) **owned by the library**, valid until the next call into the same library. The daemon copies it before it makes another call, and serialises calls into one library, so a static or thread-local buffer is enough; there is no free function.
-- `NULL` means failure. The Source's run fails with `plugin(): <symbol> in <name>: returned NULL`; a symbol that is missing, output that is not UTF-8 and output that is not JSON each have their own message.
+- `NULL` means failure. The Source's run fails with `_.plugin(): <symbol> in <name>: returned NULL`; a symbol that is missing, output that is not UTF-8 and output that is not JSON each have their own message.
 - The function **must not unwind.** A panic or C++ exception escaping an `extern "C"` function aborts the daemon. In Rust, catch panics inside the function (`std::panic::catch_unwind`) and return `NULL`.
 - The function may be called from any of the daemon's blocking threads (one at a time per library); do not rely on thread-local state surviving between calls.
 
@@ -377,7 +377,7 @@ const char* symbol(const char* input);
 ```c
 #include <stdio.h>
 
-// plugin('hello', 'greet', 'world')  ->  "hello, world"
+// _.plugin('hello', 'greet', 'world')  ->  "hello, world"
 static char out[256];
 
 const char* greet(const char* input) {
@@ -391,7 +391,7 @@ const char* greet(const char* input) {
 
 Build: `cc -shared -fPIC -o libhello.so hello.c` (Linux) or `cc -shared -o libhello.dylib hello.c` (macOS), and put the file in `~/.config/beachcomber/plugins/`. With the Source above, `comb get hello.greeting` prints `hello, world`.
 
-Plugins are for work where an `exec()` spawn is too expensive or the logic does not belong in the daemon binary: compiled parsing, a vendor SDK, a local socket protocol. A plugin runs inside the daemon with its permissions; only put libraries you trust on `[daemon.plugin] path`.
+Plugins are for work where an `_.exec()` spawn is too expensive or the logic does not belong in the daemon binary: compiled parsing, a vendor SDK, a local socket protocol. A plugin runs inside the daemon with its permissions; only put libraries you trust on `[daemon.plugin] path`.
 
 ### `sys`: the plugin compiled in
 
@@ -399,12 +399,12 @@ What only the operating system can say comes from one plugin compiled into `comb
 
 ```toml
 [daemon.providers.box.sources.load]
-data = "{{ plugin('sys', 'loadavg') }}"
+data = "{{ _.plugin('sys', 'loadavg') }}"
 result.one = "{{ data.one }}"
 return = "{{ result | poll('10s') }}"
 ```
 
-Its symbols are the C ABI's own (`const char* symbol(const char* input)`, JSON in and out, `NULL` for failure), held in a table in the binary: `plugin('sys', …)` takes the same path from the engine function to the C call as a library's symbol does, and only the finding of the function differs (the table, not `dlsym`). Each takes no arguments, answers an object, and leaves out a fact it has no value for, never `""`.
+Its symbols are the C ABI's own (`const char* symbol(const char* input)`, JSON in and out, `NULL` for failure), held in a table in the binary: `_.plugin('sys', …)` takes the same path from the engine function to the C call as a library's symbol does, and only the finding of the function differs (the table, not `dlsym`). Each takes no arguments, answers an object, and leaves out a fact it has no value for, never `""`.
 
 | symbol | answers | from |
 |---|---|---|
@@ -416,7 +416,7 @@ Its symbols are the C ABI's own (`const char* symbol(const char* input)`, JSON i
 | `network` | `{interface, ip, ipv6, vpn_active, vpn_name, ssid, online}` | `getifaddrs`; the preferred interface is an `en*` one on macOS and the default route's (`/proc/net/route`) on Linux; the SSID from `airport` on macOS (gone from macOS 14.4, where it is absent) and `nmcli`, then `iw`, on Linux |
 | `battery` | macOS `{percent, charging, status, time_remaining_secs}`; Linux `{percent, charging, status_raw, status, time_remaining_secs}`; `{}` with no battery | macOS `pmset -g batt`; Linux sysfs (`capacity`, `status`, and the estimate from `time_to_empty_now`/`time_to_full_now` or the energy or charge over the rate) |
 
-The name is reserved: `plugin('sys', …)` never searches `[daemon.plugin] path`, and `comb check config` warns of a `libsys.dylib` or `libsys.so` there, which nothing would load. An unknown symbol is `plugin(): <symbol> in sys: symbol not found`; a symbol given arguments returns `NULL`.
+The name is reserved: `_.plugin('sys', …)` never searches `[daemon.plugin] path`, and `comb check config` warns of a `libsys.dylib` or `libsys.so` there, which nothing would load. An unknown symbol is `_.plugin(): <symbol> in sys: symbol not found`; a symbol given arguments returns `NULL`.
 
 The shipped `hostname`, `user`, `uname`, `load`, `uptime`, `battery` and `network` providers are Sources like the one above, each in its own `defaults/<name>.toml`: read one there to see how it is written, and override any of its lines in `config.toml` or `conf.d/`.
 
@@ -435,6 +435,6 @@ The shipped `hostname`, `user`, `uname`, `load`, `uptime`, `battery` and `networ
 
 Every command runs with `GIT_OPTIONAL_LOCKS=0`, so `git status` cannot rewrite the index its Source watches, `GIT_TERMINAL_PROMPT=0` and the askpass guards, and with `GIT_DIR`, `GIT_COMMON_DIR` and `GIT_WORK_TREE` removed. That environment is in one place in Rust (`src/boundaries/git.rs`), so no Source can forget it. `NULL` is failure: `git status` failing where a symbol needs it, or arguments other than one string.
 
-`git` is reserved as `sys` is: `plugin('git', …)` never searches `[daemon.plugin] path`, and `comb check config` warns of a `libgit.dylib` or `libgit.so` there.
+`git` is reserved as `sys` is: `_.plugin('git', …)` never searches `[daemon.plugin] path`, and `comb check config` warns of a `libgit.dylib` or `libgit.so` there.
 
-The shipped provider is `defaults/git.toml`, five Sources over those symbols, one each. A `data` line names its directory the way its `root` line does, `lup('.git', root=true) | dirname`: a line renders in the instance's root, so that is `lup`'s first probe. A symbol notes each file it reads, stamped before it reads it, in the account of the run it is called in, as a Source's own lines do: what `HEAD` resolves through (`HEAD`, `packed-refs`, the branch's loose ref), and for each symbol what else it says something about (the index, the upstream's ref, the default branch's, the tags, the stash's log, a stepped operation's files). So a read checks exactly those, in a linked worktree too. A plugin library has no such account: its Source `stat`s what it must see in its own lines. A user can override any line of the file, but not copy or edit what a symbol does.
+The shipped provider is `defaults/git.toml`, five Sources over those symbols, one each. A `data` line names its directory the way its `root` line does, `_.lup('.git', root=true) | dirname`: a line renders in the instance's root, so that is `lup`'s first probe. A symbol notes each file it reads, stamped before it reads it, in the account of the run it is called in, as a Source's own lines do: what `HEAD` resolves through (`HEAD`, `packed-refs`, the branch's loose ref), and for each symbol what else it says something about (the index, the upstream's ref, the default branch's, the tags, the stash's log, a stepped operation's files). So a read checks exactly those, in a linked worktree too. A plugin library has no such account: its Source `stat`s what it must see in its own lines. A user can override any line of the file, but not copy or edit what a symbol does.

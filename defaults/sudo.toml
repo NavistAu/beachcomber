@@ -16,6 +16,6 @@ data = '''{% set found = namespace(ts=none) %}
 {{ found.ts.mtime }}'''
 # Active while the timestamp is under five minutes old, sudo's default `timestamp_timeout`; a
 # timestamp ahead of the clock is not.
-result.active = "{{ ((now() - (data | int)) >= 0 and (now() - (data | int)) < 300) if data is not none }}"
+result.active = "{{ ((_.now() - (data | int)) >= 0 and (_.now() - (data | int)) < 300) if data is not none }}"
 # Polled every 30 s; a failure is retried every 30 s, three times.
 return = "{{ result | poll('30s', 2) | failback('30s', 3) }}"

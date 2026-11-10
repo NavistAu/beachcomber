@@ -129,7 +129,7 @@ A missing or unknown ref is falsy at any depth, never an error: an absent
 all evaluate falsy, so `{{ nope.field or "x" }}` is `"x"`.
 
 `env` and `cwd` apply exactly as they do for `get`, with the same chain
-resolution. `exec()` is disabled: the runners build their client without the
+resolution. `_.exec()` is disabled: the runners build their client without the
 `exec` option, as an SDK user does by default.
 
 **Not every runner supports `eval`.** A runner whose binding doesn't

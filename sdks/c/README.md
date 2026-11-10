@@ -133,7 +133,7 @@ for the full bc_* contract (ownership, NULL-safety, options JSON). In short:
   accepts a single `{{ expr }}` tag, or literal text/several tags — the
   former keeps the expression's natural type, the latter is always a
   string (a source with no tags at all is its literal text).
-- `exec()` inside a template runs only on a client created with
+- `_.exec()` inside a template runs only on a client created with
   `bc_client_new("{\"exec\":true}")`; it is off by default, and a template
   that calls it then fails with `exec() is disabled in this context`.
 - `bc_watch_open(c, key, cwd, env_json)` + `bc_watch_next(w, timeout_ms)` +

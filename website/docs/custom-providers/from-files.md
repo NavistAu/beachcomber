@@ -14,7 +14,7 @@ the value refreshes as soon as it changes.
 ```toml
 # ~/.config/beachcomber/conf.d/pkg.toml
 [daemon.providers.pkg.sources.main]
-root = "{{ lup('package.json') | dirname }}"
+root = "{{ _.lup('package.json') | dirname }}"
 data = "{{ 'package.json' | read | fromjson }}"
 result.name = "{{ data.name }}"
 result.version = "{{ data.version }}"
@@ -54,7 +54,7 @@ A Cargo crate's name and version, with `pick` keeping two keys of the `[package]
 
 ```toml
 [daemon.providers.crate.sources.main]
-root = "{{ lup('Cargo.toml') | dirname }}"
+root = "{{ _.lup('Cargo.toml') | dirname }}"
 data = "{{ 'Cargo.toml' | read | fromtoml }}"
 result = "{{ data.package | pick('name', 'version') }}"
 return = "{{ result | watch('Cargo.toml') | nearest }}"
@@ -75,7 +75,7 @@ A version file, watched so an edit shows on the next read:
 
 ```toml
 [daemon.providers.nodever.sources.main]
-root = "{{ lup('.node-version') | dirname }}"
+root = "{{ _.lup('.node-version') | dirname }}"
 data = "{{ '.node-version' | read | trim }}"
 result.version = "{{ data }}"
 return = "{{ result | watch('.node-version') | poll('300s') | nearest }}"

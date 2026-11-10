@@ -363,7 +363,7 @@ fn the_shipped_comb_file_holds_the_abstract_provider_the_decay_and_the_abstract_
         providers["template"].as_str(),
         Some("{{ client.providers[_.name].template }}")
     );
-    assert_eq!(providers["result"].as_str(), Some("{{ merge(sources) }}"));
+    assert_eq!(providers["result"].as_str(), Some("{{ _.merge(sources) }}"));
     assert_eq!(
         providers["return"].as_str(),
         Some("{{ result | facet('template', template) }}")
@@ -677,7 +677,7 @@ fn comb_check_config_probes_without_creating_the_defaults_directory() {
     std::fs::create_dir_all(cfg_dir.join("conf.d")).unwrap();
     std::fs::write(
         cfg_dir.join("config.toml"),
-        "[daemon]\nlog_level = \"info\"\n",
+        "schema.version = 2\n[daemon]\nlog_level = \"info\"\n",
     )
     .unwrap();
 

@@ -4,7 +4,7 @@ template.workspace = "{{ env.TF_WORKSPACE or comb.terraform.workspace }}"
 
 [daemon.providers.terraform.sources.state]
 # A terraform root: the nearest directory holding `.terraform`, walking up to `/`.
-root = "{{ lup('.terraform', root=true) | dirname }}"
+root = "{{ _.lup('.terraform', root=true) | dirname }}"
 # The workspace selected there: terraform keeps its name in `.terraform/environment`.
 data = "{{ '.terraform/environment' | read }}"
 # No such file is the `default` workspace, as terraform reads it; a file that names none is absent.

@@ -14,7 +14,7 @@ use crate::provider::{FailbackConfig, Poll, Schedule, expand_abs_path};
 use crate::scheduler::lifecycle::DEFAULT_POLL_COUNT;
 use libbeachcomber::engine::op_error;
 use libbeachcomber::engine::pure_engine_env;
-use minijinja::value::{Kwargs, Object, ObjectRepr, Rest, Serde, Value as MjValue, ValueKind};
+use minijinja::value::{Kwargs, Object, ObjectRepr, Rest, Value as MjValue, ValueKind};
 use minijinja::{Environment, Error, ErrorKind, UndefinedBehavior};
 use std::collections::HashMap;
 use std::fmt;
@@ -267,7 +267,10 @@ fn context(render: &Render, printed: &Arc<AtomicUsize>) -> MjValue {
     let sentinel = MjValue::from_object(Sentinel {
         printed: printed.clone(),
     });
-    let underscore = MjValue::from(Serde(serde_json::json!({"name": render.name})));
+    let underscore = libbeachcomber::library::underscore_with(
+        &render.base,
+        &[("name", MjValue::from(render.name.as_str()))],
+    );
     MjValue::from_pairs([("result", sentinel), ("_", underscore)])
 }
 
@@ -933,9 +936,9 @@ mod tests {
             ("{{ result | ttl(sources) }}", "ttl"),
             ("{{ result | poll(result) }}", "poll"),
             ("{{ result | watch('.' ~ data.path) }}", "watch"),
-            ("{{ result | poll(exec('echo 60')) }}", "poll"),
+            ("{{ result | poll(_.exec('echo 60')) }}", "poll"),
             ("{{ result | watch(read('/etc/hosts')) }}", "watch"),
-            ("{{ result | watch(lup('.git')) }}", "watch"),
+            ("{{ result | watch(_.lup('.git')) }}", "watch"),
             ("{{ result | watch('x' ~ result) }}", "watch"),
             ("{{ result | poll(result | upper) }}", "poll"),
             ("{{ result | watch([result]) }}", "watch"),
@@ -1397,11 +1400,11 @@ mod tests {
     #[test]
     fn a_return_line_cannot_read_the_clock() {
         for call in [
-            "now()",
+            "_.now()",
             "1 | strftime('%F')",
             "'x' | fromiso",
             "1 | ago",
-            "spinner('ab')",
+            "_.spinner('ab')",
         ] {
             let e = record(&[&format!(
                 "{{% set t = {call} %}}{{{{ result | poll('2s') }}}}"

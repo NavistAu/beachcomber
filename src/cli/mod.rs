@@ -26,7 +26,7 @@ pub fn set_no_exec(no_exec: bool) {
 
 /// The one place the CLI builds a resolution's [`Inputs`]: the caller's
 /// directory and environment, which slot is addressed, the read's flags, and
-/// whether a template may call `exec()` (on unless `--no-exec` was given).
+/// whether a template may call `_.exec()` (on unless `--no-exec` was given).
 pub fn inputs<'a>(
     cwd: &'a str,
     env: &'a std::collections::HashMap<String, String>,

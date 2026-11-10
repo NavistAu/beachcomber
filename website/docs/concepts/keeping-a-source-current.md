@@ -12,7 +12,7 @@ To see each one working, use a source whose answer changes every second, the tim
 
 ```toml title="~/.config/beachcomber/config.toml"
 [daemon.providers.clock.sources.by_default]
-data = "{{ exec('date +%T') | trim }}"
+data = "{{ _.exec('date +%T') | trim }}"
 result.by_default = "{{ data }}"
 ```
 
@@ -152,7 +152,7 @@ This clock fails while a file called `~/broken` exists:
 
 ```toml
 [daemon.providers.clock.sources.flaky]
-data = "{{ exec('test -e ~/broken && exit 1; date +%T') | trim }}"
+data = "{{ _.exec('test -e ~/broken && exit 1; date +%T') | trim }}"
 result.flaky = "{{ data }}"
 return = "{{ result | poll('2s', 30) | failback('10s', 2) }}"
 ```
@@ -177,7 +177,7 @@ try, 10 seconds after the second failure.
 
 ```toml
 [daemon.providers.clock.sources.slow]
-data = "{{ exec('sleep 3; date +%T') | trim }}"
+data = "{{ _.exec('sleep 3; date +%T') | trim }}"
 result.slow = "{{ data }}"
 return = "{{ result | poll('2s', 30) | timeout('1s') }}"
 ```
@@ -199,12 +199,12 @@ Two clocks that each take half a second, and expire after 4 seconds:
 
 ```toml
 [daemon.providers.clock.sources.hasty]
-data = "{{ exec('sleep 0.5; date +%T') | trim }}"
+data = "{{ _.exec('sleep 0.5; date +%T') | trim }}"
 result.hasty = "{{ data }}"
 return = "{{ result | ttl('4s') }}"
 
 [daemon.providers.clock.sources.patient]
-data = "{{ exec('sleep 0.5; date +%T') | trim }}"
+data = "{{ _.exec('sleep 0.5; date +%T') | trim }}"
 result.patient = "{{ data }}"
 return = "{{ result | ttl('4s') | budget('1s') }}"
 ```

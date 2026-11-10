@@ -19,7 +19,7 @@ pub mod engine;
 pub mod env;
 pub mod eval;
 pub mod fs;
-// `exec()` spawn engine, backing the `exec()` jinja function registered in
+// `_.exec()` spawn engine, backing the `_.exec()` jinja function registered in
 // `engine::engine_env`.
 mod exec;
 pub mod key;
@@ -440,7 +440,7 @@ pub struct ClientConfig {
     pub timeout: Duration,
     /// Whether to attempt starting the daemon if it's not running.
     pub auto_start: bool,
-    /// Whether templates this client resolves may call `exec()`. Off by
+    /// Whether templates this client resolves may call `_.exec()`. Off by
     /// default: an embedding caller does not spawn processes on the user's
     /// behalf unless it says so.
     pub exec: bool,
@@ -499,7 +499,7 @@ impl Client {
         self.version_mismatch.get().cloned().flatten()
     }
 
-    /// Whether templates this client resolves may call `exec()`
+    /// Whether templates this client resolves may call `_.exec()`
     /// ([`ClientConfig::exec`]).
     pub fn allow_exec(&self) -> bool {
         self.config.exec
@@ -859,7 +859,7 @@ pub struct Session {
     /// The directory [`Session::set_context`] set, sent with every request
     /// that names no path.
     context: Option<String>,
-    /// Whether templates this session resolves may call `exec()`.
+    /// Whether templates this session resolves may call `_.exec()`.
     allow_exec: bool,
 }
 

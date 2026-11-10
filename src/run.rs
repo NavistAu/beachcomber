@@ -1166,7 +1166,7 @@ mod tests {
             name: "s".into(),
             root: None,
             data: format!(
-                "{{{{ ('{}' | read) ~ plugin('/gate/libgate.so', 'wait') }}}}",
+                "{{{{ ('{}' | read) ~ _.plugin('/gate/libgate.so', 'wait') }}}}",
                 state.display()
             ),
             result: ResultSpec::Fields(vec![("v".into(), "{{ data }}".into())]),

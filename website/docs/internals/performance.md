@@ -203,7 +203,7 @@ Every client renders templates through `libbeachcomber::resolve`, so its cost is
 
 **Result:** the status line with 140 variables 17 → 8.0 ms a render, within 1 ms of a minimal environment's 7.0 ms. `resolve/widget/140` 1.4 → 0.48 ms.
 
-**What remains:** a resolution still copies the environment twice, once into `EngineCtx` (the environment of `exec()`, `read` and `lup`) and once into the template value. That is once per resolution, not per render: `resolve/env_read/140` is about 70 µs above `resolve/env_read/1`, before and after.
+**What remains:** a resolution still copies the environment twice, once into `EngineCtx` (the environment of `_.exec()`, `read` and `lup`) and once into the template value. That is once per resolution, not per render: `resolve/env_read/140` is about 70 µs above `resolve/env_read/1`, before and after.
 
 **Rule for future changes:** What every render of a resolution reads the same — the environment, the directory — is built once in `Resolver::new`, never in `bind` or per render.
 
@@ -302,7 +302,7 @@ The CLI's time is mostly process start. On the Intel Mac, in the same harness `c
 |---|---|---|---|
 | **A file's lines** | about 90-170 µs | hostname, user, load, uptime (a `sys` call), gcloud_configs (reads files); `git.head` about 0.3 ms over its read | One run of the shipped Source: the engine, the lines, no process |
 | **One process** | 3-12 ms | network 2.7 ms (`getifaddrs`, and `airport` where it exists), battery 11.8 ms (`pmset`) | One spawn, inside `sys` |
-| **Commands** | 10-50 ms | mise, direnv (with direnv), Sources that call `exec()` | Process spawn (user-defined) |
+| **Commands** | 10-50 ms | mise, direnv (with direnv), Sources that call `_.exec()` | Process spawn (user-defined) |
 | **A repository's worth** | `status` 13, `diff` 11, `refs` 11, `lineage` 15 ms on this repository, `lineage` about 125 on a 400-commit branch | git: 1, 2, 3 and 2 or 3 `git` processes | Through the compiled-in `git` plugin; no shell |
 
 These are one run through `ProviderRegistry::shipped` (`cargo bench --bench providers -- --quick`, load about 10), and for git the force-run times below. The sub-microsecond figures this table used to give were the libc call alone; the shipped Source's cost is the render around it, on a timer, never on a read.
@@ -347,7 +347,7 @@ daemon's own startup path in-process (native watcher), 2000 interleaved rounds (
 | `git.branch` (git `head` ran on every read) | 66 µs | 753 µs | 13.6 ms | 48.8 ms |
 | `git`, the whole namespace | 97 µs | 798 µs | 11.9 ms | 53.1 ms |
 
-`cargo bench --bench validity -- second_get_after_cold` (audit P9: a `root = lup(…)` plus `watch(…)` Source, the
+`cargo bench --bench validity -- second_get_after_cold` (audit P9: a `root = _.lup(…)` plus `watch(…)` Source, the
 cold `get`, then the next ones, in fresh daemons):
 
 - **P9 does not reproduce.** The second `get` took 0.06–0.69 ms in 12 of 12 fresh in-process release daemons (load
@@ -416,7 +416,7 @@ above were taken at load 55-200 and are superseded where this one gives a number
 or a budget spent before the read reaches a run) waited on a timer for a deadline already past. tokio's timer turns in
 whole milliseconds and rounds a deadline up to its next turn, so the read sat about a millisecond behind it whenever
 the run outlasted that. A Source whose data is a constant finished first, and its `--wait 0` read answered in 0.3 ms;
-one running `exec('echo 1')` did not, and its read took 1.5 ms, which looked like the cost of the spawn. The spawn is on
+one running `_.exec('echo 1')` did not, and its read took 1.5 ms, which looked like the cost of the spawn. The spawn is on
 the run's blocking thread and was never on the read's path. `Run::outcome_by` now answers a deadline already past at
 once, with how the run stands. A budget that runs out during the wait still ends on the timer's turn, which is why the
 default read answers 0.5-3.3 ms after its 50 ms budget.

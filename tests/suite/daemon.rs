@@ -33,7 +33,7 @@ fn the_env_files_variables_reach_a_sources_env_and_its_exec_child() {
         config_dir.join("config.toml"),
         r#"
 [daemon.providers.envprobe.sources.s]
-data = "{{ {'env': env.BC_ENV_FILE_PROBE, 'child': exec('echo $BC_ENV_FILE_PROBE')} }}"
+data = "{{ {'env': env.BC_ENV_FILE_PROBE, 'child': _.exec('echo $BC_ENV_FILE_PROBE')} }}"
 result.from_env = "{{ data.env }}"
 result.from_exec = "{{ data.child }}"
 "#,

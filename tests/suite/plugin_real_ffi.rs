@@ -40,13 +40,16 @@ fn plugin_calls_a_real_cdylib() {
     let env = daemon_engine_env(plugins);
     let p = path.to_string_lossy();
     let sum = env
-        .render_str(&format!("{{{{ plugin('{p}', 'bc_sum', 1, 2, 3.5) }}}}"), ())
+        .render_str(
+            &format!("{{{{ _.plugin('{p}', 'bc_sum', 1, 2, 3.5) }}}}"),
+            (),
+        )
         .expect("plugin bc_sum");
     assert_eq!(sum, "6.5");
     let echoed = env
         .render_str(
             &format!(
-                "{{% set r = plugin('{p}', 'bc_echo_args', 1, 'a') %}}{{{{ r | length }}}}:{{{{ r[0] }}}}:{{{{ r[1] }}}}"
+                "{{% set r = _.plugin('{p}', 'bc_echo_args', 1, 'a') %}}{{{{ r | length }}}}:{{{{ r[0] }}}}:{{{{ r[1] }}}}"
             ),
             (),
         )
@@ -64,7 +67,7 @@ fn plugin_failures_are_distinct_through_a_real_cdylib() {
     let env = daemon_engine_env(plugins);
     let p = path.to_string_lossy();
     let fails = |symbol: &str| {
-        env.render_str(&format!("{{{{ plugin('{p}', '{symbol}') }}}}"), ())
+        env.render_str(&format!("{{{{ _.plugin('{p}', '{symbol}') }}}}"), ())
             .unwrap_err()
             .to_string()
     };
@@ -122,18 +125,18 @@ fn sys_and_a_cdylib_share_one_call_path() {
     let p = path.to_string_lossy();
     let render = |t: &str| env.render_str(t, ()).map_err(|e| e.to_string());
     assert_eq!(
-        render(&format!("{{{{ plugin('{p}', 'bc_sum', 1, 2) }}}}")).unwrap(),
+        render(&format!("{{{{ _.plugin('{p}', 'bc_sum', 1, 2) }}}}")).unwrap(),
         "3"
     );
     assert_eq!(
-        render("{{ plugin('sys', 'loadavg') | length }}").unwrap(),
+        render("{{ _.plugin('sys', 'loadavg') | length }}").unwrap(),
         "3"
     );
     let cdylib = render(&format!(
-        "{{{{ plugin('{p}', 'bc_plugin_returns_null') }}}}"
+        "{{{{ _.plugin('{p}', 'bc_plugin_returns_null') }}}}"
     ))
     .unwrap_err();
-    let sys = render("{{ plugin('sys', 'loadavg', 1) }}").unwrap_err();
+    let sys = render("{{ _.plugin('sys', 'loadavg', 1) }}").unwrap_err();
     assert!(
         cdylib.contains(&format!(
             "plugin(): bc_plugin_returns_null in {p}: returned NULL"

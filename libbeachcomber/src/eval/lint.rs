@@ -155,6 +155,15 @@ pub fn lint(probe: &Probe<'_>, src: &str, line: Line, known: &Known<'_>) -> Vec<
         sees.extend(known.providers.iter().map(String::as_str));
     }
     let mut found = refused(src, line);
+    let bare: std::collections::BTreeSet<String> = super::bare_calls(probe.env(), src)
+        .into_iter()
+        .map(|(_, spelled)| spelled)
+        .collect();
+    found.extend(bare.iter().map(|s| Finding::Compile(super::moved(s))));
+    let bare: Vec<&str> = bare
+        .iter()
+        .map(|s| s.split('.').next().unwrap_or(s))
+        .collect();
     if line.client() {
         found.extend(imports(src).into_iter().filter_map(|import| match import {
             Import::Named(name)
@@ -178,7 +187,7 @@ pub fn lint(probe: &Probe<'_>, src: &str, line: Line, known: &Known<'_>) -> Vec<
     found.extend(
         names
             .into_iter()
-            .filter(|name| !sees.contains(&name.as_str()))
+            .filter(|name| !sees.contains(&name.as_str()) && !bare.contains(&name.as_str()))
             .map(|name| {
                 Finding::Unknown(format!(
                     "unknown name '{name}' ({unless}this line sees {})",
@@ -565,7 +574,7 @@ mod tests {
     fn a_function_or_filter_is_not_a_name() {
         assert_eq!(
             lint_as(
-                "{{ lup('.git') ~ ('{}' | fromjson | length) }}",
+                "{{ _.lup('.git') ~ ('{}' | fromjson | length) }}",
                 Line::Result
             ),
             vec![]
@@ -578,6 +587,42 @@ mod tests {
                 "{line:?}"
             );
         }
+    }
+
+    /// A function called by its bare name is a compile finding naming where
+    /// it went, once, on every line; the name is not also an unknown one. A
+    /// provider of a function's name reads bare.
+    #[test]
+    fn a_bare_call_names_its_new_spelling() {
+        for line in Line::ALL.into_iter().filter(|l| *l != Line::Macro) {
+            assert_eq!(
+                lint_as("{{ lup('a') ~ lup('b') ~ log.info('c') }}", line),
+                [
+                    Finding::Compile(
+                        "log.info() is now _.log.info(): comb's functions are called through _"
+                            .into()
+                    ),
+                    Finding::Compile(
+                        "lup() is now _.lup(): comb's functions are called through _".into()
+                    ),
+                ],
+                "{line:?}"
+            );
+        }
+        let providers = ["now".to_string(), "log".to_string()];
+        let known = Known {
+            providers: &providers,
+            ..Known::default()
+        };
+        assert_eq!(
+            lint(
+                &probe(),
+                "{{ now.x ~ log.y ~ _.now() }}",
+                Line::Template,
+                &known
+            ),
+            vec![]
+        );
     }
 
     /// The one table of what each kind of line reads.
@@ -820,7 +865,7 @@ mod tests {
         }
         for src in [
             "{{ 'k' | cache() | exec() }}",
-            "{{ exec('k' | cache()) }}",
+            "{{ _.exec('k' | cache()) }}",
             "{{ ('k' | cache() | exec()) or none }}",
         ] {
             assert_eq!(lint_as(src, Line::Template), [], "{src}");

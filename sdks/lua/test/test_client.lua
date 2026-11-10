@@ -234,7 +234,7 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
   end)
 
   -- ── exec option (ffi transport) ───────────────────────────────────────────
-  -- An exec() call with no daemon-backed ref never touches the socket, so
+  -- An _.exec() call with no daemon-backed ref never touches the socket, so
   -- whether `opts.exec` reached bc_client_new is observable against a dead
   -- socket with autostart off. Needs LuaJIT and a built libbeachcomber
   -- ($BEACHCOMBER_LIB, or the workspace's own debug build).
@@ -274,7 +274,7 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
     test("exec is disabled by default", function()
       local c, cerr = exec_client(nil)
       assert_nil(cerr)
-      local value, err = c:eval("{{ exec(['printf', 'x']) }}", { cwd = "/tmp" })
+      local value, err = c:eval("{{ _.exec(['printf', 'x']) }}", { cwd = "/tmp" })
       assert_nil(value)
       assert_eq(err.kind, "server_error")
       assert_true(tostring(err.message):find("exec() is disabled in this context", 1, true) ~= nil, tostring(err.message))
@@ -283,7 +283,7 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
     test("exec = true reaches bc_client_new", function()
       local c, cerr = exec_client(true)
       assert_nil(cerr)
-      local value, err = c:eval("{{ exec(['printf', 'x']) }}", { cwd = "/tmp" })
+      local value, err = c:eval("{{ _.exec(['printf', 'x']) }}", { cwd = "/tmp" })
       assert_nil(err)
       assert_eq(value, "x")
     end)

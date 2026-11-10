@@ -348,7 +348,7 @@ comb g --wait 0 git.branch .
 comb g battery.percent
 comb g hostname.short
 
-# Template-backed keys render here, with this shell's environment (exec() enabled)
+# Template-backed keys render here, with this shell's environment (_.exec() enabled)
 comb g python.version .        # defaults/python.toml's cascade over $PYENV_VERSION, mise, asdf, the venv
 comb g kubecontext.context     # kubectl config current-context, through exec()
 comb g python:template.version # the raw template text, unrendered
@@ -369,7 +369,7 @@ comb g.j git:cache.branch .    # → {"age_ms": 1240, "source": "source(head)", 
 
 Show all warm cache entries as a table — one row per provider field, with SOURCE naming what produced each value: a Source of the provider (`source(head)`), `put`, `config(<file>)`, `computed(return)`, or `rendered` for a row rendered here. The `TTL` column shows each entry's lifecycle position (`★` active, `3`/`2`/`1`/`0` decay countdown), effective poll interval, Active-window poll count, and whether the entry watches its files while it is Active (`∙`).
 
-`watch -c comb status` is the recommended live view — it keeps colour and the human preset active even when stdout is a pipe, so you can watch entries pulse through their lifecycle in real time. Each refresh re-renders the caller's template leaves, `exec()` included, so a tight interval multiplies whatever the templates spawn.
+`watch -c comb status` is the recommended live view — it keeps colour and the human preset active even when stdout is a pipe, so you can watch entries pulse through their lifecycle in real time. Each refresh re-renders the caller's template leaves, `_.exec()` included, so a tight interval multiplies whatever the templates spawn.
 
 ```sh
 $ comb s
@@ -394,7 +394,7 @@ comb s -f json
 
 **Flags:** `--format <preset>` (one of: `human`, `tsv`, `json`, `csv`, `table`, `sh`), `--filter <KEY=VALUE>`, `--filter=lifecycle=active|decay<N>|once|static|rendered`, `--sort <default|provider|path|field|value|age|poll_interval|lifecycle>`, `--no-trunc`, `--max-width=auto|N` (default auto: the terminal width, 120 when not a terminal; a bad value is refused), and the global `--color=auto|always|never` (wins over `NO_COLOR`) and `--ascii`.
 
-A namespace holding a `[client.providers.<p>]` template renders one extra row per leaf visible from the caller's directory — resolved with this shell's environment and `exec()` enabled, exactly as `comb get` would render it — beside the raw template row and any cached value at that address; a field that's both cached and templated shows both rows. A rendered row's SOURCE is `rendered`, its VALUE is marked (cyan, or a `▸ `/`> ` lead-in without colour), and `--filter=lifecycle=rendered` selects just those rows.
+A namespace holding a `[client.providers.<p>]` template renders one extra row per leaf visible from the caller's directory — resolved with this shell's environment and `_.exec()` enabled, exactly as `comb get` would render it — beside the raw template row and any cached value at that address; a field that's both cached and templated shows both rows. A rendered row's SOURCE is `rendered`, its VALUE is marked (cyan, or a `▸ `/`> ` lead-in without colour), and `--filter=lifecycle=rendered` selects just those rows.
 
 Use `comb check daemon` for daemon health (pid, uptime, version, active watchers, request counts).
 
@@ -621,7 +621,7 @@ timeout = "10s"
 # Path to an environment file loaded at daemon startup.
 # Each line is KEY=VALUE (or KEY="VALUE"). Blank lines and #comments are ignored.
 # These vars reach a Source's lines as `env.VAR` (an unset one renders empty) and
-# the commands its exec() runs.
+# the commands its _.exec() runs.
 # Default: ~/.config/beachcomber/env (loaded automatically if present)
 # env_file = "~/.config/beachcomber/env"
 
@@ -667,44 +667,44 @@ return = "{{ result | poll('15s', 8) | failback('2s', 5) | nearest }}"
 
 # Minimal: a provider with no root that polls every 30 seconds
 [daemon.providers.docker_context.sources.main]
-data = "{{ exec('docker context show') | trim }}"
+data = "{{ _.exec('docker context show') | trim }}"
 result.value = "{{ data }}"            # one field, `docker_context.value`
 return = "{{ result | poll('30s') }}"
 
 # A rooted provider that watches files and has a poll fallback
 [daemon.providers.node_version.sources.main]
-root = "{{ lup('package.json') | dirname }}"   # the directory an instance answers for
-data = "{{ exec('node --version') | trim }}"
+root = "{{ _.lup('package.json') | dirname }}"   # the directory an instance answers for
+data = "{{ _.exec('node --version') | trim }}"
 result.value = "{{ data }}"
 return = "{{ result | watch('.node-version', '.nvmrc', 'package.json') | poll('60s') }}"
 
 # A Source with structured JSON output: `result = "{{ data }}"` owns the whole node
 [daemon.providers.cargo_meta.sources.main]
-root = "{{ lup('Cargo.toml') | dirname }}"
-data = "{{ exec('cargo metadata --format-version=1 --no-deps --quiet') | fromjson }}"
+root = "{{ _.lup('Cargo.toml') | dirname }}"
+data = "{{ _.exec('cargo metadata --format-version=1 --no-deps --quiet') | fromjson }}"
 result = "{{ data }}"
 return = "{{ result | watch('Cargo.toml', 'Cargo.lock') | poll('120s') }}"
 
 
 # ─── HTTP ─────────────────────────────────────────────────────────────────────
-# Fetch data from REST APIs with url() in a Source's data line — no curl fork,
+# Fetch data from REST APIs with _.url() in a Source's data line — no curl fork,
 # no shell spawning. A non-2xx response fails the Source (its failback applies).
 
 # Basic: poll a status API
 [daemon.providers.service_status.sources.main]
-data = "{{ url('https://status.anthropic.com/api/v2/summary.json') | fromjson }}"
+data = "{{ _.url('https://status.anthropic.com/api/v2/summary.json') | fromjson }}"
 result.indicator = "{{ data.status.indicator }}"   # response.status.indicator → field "indicator"
 return = "{{ result | poll('60s') }}"
 
 # With auth headers (the daemon's environment is `env`)
 [daemon.providers.github_rate.sources.main]
-data = "{{ url('https://api.github.com/rate_limit', headers={'Authorization': 'Bearer ' ~ env.GITHUB_TOKEN}) | fromjson }}"
+data = "{{ _.url('https://api.github.com/rate_limit', headers={'Authorization': 'Bearer ' ~ env.GITHUB_TOKEN}) | fromjson }}"
 result = "{{ data.rate }}"                          # { "limit": 5000, "remaining": 4999, ... }
 return = "{{ result | poll('30s') }}"
 
 # Infrequent poll (daily)
 [daemon.providers.exchange_rate.sources.main]
-data = "{{ url('https://api.exchangerate-api.com/v4/latest/USD') | fromjson }}"
+data = "{{ _.url('https://api.exchangerate-api.com/v4/latest/USD') | fromjson }}"
 result.value = "{{ data.rates.AUD }}"               # a single nested value
 return = "{{ result | poll('86400s') }}"
 ```
@@ -734,9 +734,9 @@ return = "{{ result | poll('86400s') }}"
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `data` | string | yes | The body: a jinja line that runs on the daemon, usually `exec('command')`. Sees `env` (the daemon's own), `comb.<provider>`, `sources.<source>()` (a sibling Source), `daemon.providers.<provider>.sources.<source>()` (any provider's Source) and `_`. |
+| `data` | string | yes | The body: a jinja line that runs on the daemon, usually `_.exec('command')`. Sees `env` (the daemon's own), `comb.<provider>`, `sources.<source>()` (a sibling Source), `daemon.providers.<provider>.sources.<source>()` (any provider's Source) and `_`. |
 | `result` | string, or table of strings | yes | `result = "{{ data }}"` owns the whole provider node; `result.<field> = "{{ … }}"` lines declare fields, each over `data`. |
-| `root` | string | no | The directory an instance answers for, e.g. `{{ lup('.git') \| dirname }}`. Empty (the default) is the one instance at `~`; on a `\| nearest` Source, a `root` that renders none means no instance. |
+| `root` | string | no | The directory an instance answers for, e.g. `{{ _.lup('.git') \| dirname }}`. Empty (the default) is the one instance at `~`; on a `\| nearest` Source, a `root` that renders none means no instance. |
 | `return` | string | no | What the Source hands out, decorated: `poll(interval, count)`, `watch(path, …)`, `ttl(interval)`, `failback(interval, count)`, `budget(interval)`, `nearest` (the nearest instance answers alone instead of cascading up to `~`; see Rooted Sources). Absent, it takes the nearest `_` Source's (`defaults/00-comb.toml` ships `poll('60s', 12) \| failback('1s', 3)`). `\| super` extends that line instead of replacing it. |
 
 A `data` line, and a provider's `result` and `return` lines, may call a Source (`daemon.providers.<provider>.sources.<source>()`; a Source also calls a sibling, `sources.<source>()`), as in `return = "{{ result | merge(daemon.providers.gitstats.sources.repo()) | facet('template', template) }}"`. A call gives the called Source's stored record as a read from the same directory would find it. A Source with nothing stored is run inline, once, by the read or refresh that needs it, and is kept warm while it is called; its own failure is the caller's miss. Sources that call each other in a ring are a load error; were one run anyway, it fails the read with `sources: <p>.<s> calls itself`.
@@ -749,7 +749,7 @@ A table named `_` (`[daemon.providers.<name>.sources._]`, `[daemon.providers._.s
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `path` | array of strings | `["<config dir>/plugins"]` | Directories `plugin(name, symbol, args...)` searches, in order, for `lib<name>.dylib` (macOS) or `lib<name>.so` (Linux). Each is absolute or starts `~/`. A later file's list replaces an earlier one's. |
+| `path` | array of strings | `["<config dir>/plugins"]` | Directories `_.plugin(name, symbol, args...)` searches, in order, for `lib<name>.dylib` (macOS) or `lib<name>.so` (Linux). Each is absolute or starts `~/`. A later file's list replaces an earlier one's. |
 
 ---
 
@@ -908,10 +908,10 @@ A `comb g` namespace need not have a Source behind it: a provider named only in 
 | `terraform` | `defaults/terraform.toml` | `workspace` | `$TF_WORKSPACE`, falling back to the cached `comb.terraform.workspace` — a template at a cached field's path wins on read |
 | `conda` | `defaults/conda.toml` | `env` | `$CONDA_DEFAULT_ENV` |
 | `op` | `defaults/op.toml` | `service_account` (bool) | whether `$OP_SERVICE_ACCOUNT_TOKEN` is set — never the token itself |
-| `kubecontext` | `defaults/kubecontext.toml` | `context`, `namespace` | `exec('kubectl config …')` |
-| `talos` | `defaults/talos.toml` | `context` | `exec(['talosctl', 'config', 'info', …])` |
+| `kubecontext` | `defaults/kubecontext.toml` | `context`, `namespace` | `_.exec('kubectl config …')` |
+| `talos` | `defaults/talos.toml` | `context` | `_.exec(['talosctl', 'config', 'info', …])` |
 
-Only `python` and `terraform` have a daemon provider of the same name, so only there does `comb g <namespace>` return cached fields deep-merged with rendered ones. `aws` and `gcloud` are templates only: their data lives in the differently named `aws_profiles` and `gcloud_configs` namespaces, which the templates reach through `comb.*` refs, and `comb g aws` is just the rendered template tree. `conda`, `op`, `kubecontext` and `talos` are templates only too, over the environment or a command. `kubecontext` and `talos` call the tool the shell would run — `kubectl config current-context`, `talosctl config info` — so they honour the shell's own `$KUBECONFIG`/`$TALOSCONFIG`, and the field names are unchanged: `comb g kubecontext.context` still prints the active context. Because they spawn a process, they render only where `exec()` is enabled — `comb get`/`eval`, or an SDK client constructed with `exec` on; anywhere else the field is the error `exec() is disabled in this context`.
+Only `python` and `terraform` have a daemon provider of the same name, so only there does `comb g <namespace>` return cached fields deep-merged with rendered ones. `aws` and `gcloud` are templates only: their data lives in the differently named `aws_profiles` and `gcloud_configs` namespaces, which the templates reach through `comb.*` refs, and `comb g aws` is just the rendered template tree. `conda`, `op`, `kubecontext` and `talos` are templates only too, over the environment or a command. `kubecontext` and `talos` call the tool the shell would run — `kubectl config current-context`, `talosctl config info` — so they honour the shell's own `$KUBECONFIG`/`$TALOSCONFIG`, and the field names are unchanged: `comb g kubecontext.context` still prints the active context. Because they spawn a process, they render only where `_.exec()` is enabled — `comb get`/`eval`, or an SDK client constructed with `exec` on; anywhere else the field is the error `exec() is disabled in this context`.
 
 ### Development Tools
 
@@ -1293,11 +1293,11 @@ A custom provider is a **Source**: a function with a body (`data`), the fields i
 
 ```toml
 [daemon.providers.demo.sources.s]
-data = "{{ exec('cat ' ~ env.HOME ~ '/demo.json') | fromjson }}"
+data = "{{ _.exec('cat ' ~ env.HOME ~ '/demo.json') | fromjson }}"
 result = "{{ data }}"
 ```
 
-`exec('…')` runs a string under `sh -c` with the daemon's environment; `exec(['cmd', 'arg'])` runs one argument per element, with no shell. `$BAR` inside the string is expanded by the shell, which the engine cannot see (a future `cache()` hash would miss it): prefer `exec('cmd ' ~ env.bar)`. Without a `return` line, the Source takes the abstract Source's schedule: polled every 60 seconds while queried, backed off after repeated failures.
+`_.exec('…')` runs a string under `sh -c` with the daemon's environment; `_.exec(['cmd', 'arg'])` runs one argument per element, with no shell. `$BAR` inside the string is expanded by the shell, which the engine cannot see (a future `cache()` hash would miss it): prefer `_.exec('cmd ' ~ env.bar)`. Without a `return` line, the Source takes the abstract Source's schedule: polled every 60 seconds while queried, backed off after repeated failures.
 
 ### Output Formats
 
@@ -1307,7 +1307,7 @@ The shape of the output is the filter after `exec`.
 
 ```toml
 [daemon.providers.docker_ctx.sources.main]
-data = "{{ exec('~/.config/beachcomber/providers/docker-context.sh') | fromjson }}"
+data = "{{ _.exec('~/.config/beachcomber/providers/docker-context.sh') | fromjson }}"
 result = "{{ data }}"
 ```
 
@@ -1315,7 +1315,7 @@ result = "{{ data }}"
 
 ```toml
 [daemon.providers.docker_ctx.sources.main]
-data = "{{ exec('~/.config/beachcomber/providers/docker-context.sh') | fromini }}"
+data = "{{ _.exec('~/.config/beachcomber/providers/docker-context.sh') | fromini }}"
 result.context = "{{ data[''].context }}"
 ```
 
@@ -1323,7 +1323,7 @@ result.context = "{{ data[''].context }}"
 
 ```toml
 [daemon.providers.node_version.sources.main]
-data = "{{ exec('node --version | tr -d v') | trim }}"
+data = "{{ _.exec('node --version | tr -d v') | trim }}"
 result.value = "{{ data }}"
 ```
 
@@ -1337,7 +1337,7 @@ The decorators on `return` say when `data` runs again.
 
 ```toml
 [daemon.providers.vpn_status.sources.main]
-data = "{{ exec('~/.config/beachcomber/providers/vpn-check.sh') | fromini }}"
+data = "{{ _.exec('~/.config/beachcomber/providers/vpn-check.sh') | fromini }}"
 result.active = "{{ data[''].active }}"
 return = "{{ result | poll('10s') }}"
 ```
@@ -1346,8 +1346,8 @@ return = "{{ result | poll('10s') }}"
 
 ```toml
 [daemon.providers.ruby_version.sources.main]
-root = "{{ lup('.ruby-version') | dirname }}"
-data = "{{ exec('rbenv version-name') | trim }}"
+root = "{{ _.lup('.ruby-version') | dirname }}"
+data = "{{ _.exec('rbenv version-name') | trim }}"
 result.value = "{{ data }}"
 return = "{{ result | watch('.ruby-version', 'Gemfile', '.tool-versions') }}"
 ```
@@ -1356,8 +1356,8 @@ return = "{{ result | watch('.ruby-version', 'Gemfile', '.tool-versions') }}"
 
 ```toml
 [daemon.providers.cargo_meta.sources.main]
-root = "{{ lup('Cargo.toml') | dirname }}"
-data = "{{ exec('cargo metadata --format-version=1 --no-deps --quiet') | fromjson }}"
+root = "{{ _.lup('Cargo.toml') | dirname }}"
+data = "{{ _.exec('cargo metadata --format-version=1 --no-deps --quiet') | fromjson }}"
 result = "{{ data }}"
 return = "{{ result | watch('Cargo.toml', 'Cargo.lock') | poll('120s') }}"
 ```
@@ -1383,7 +1383,7 @@ printf '{"context":"%s","remote":%s}\n' "$context" "$is_remote"
 
 ```toml
 [daemon.providers.docker_context.sources.main]
-data = "{{ exec('~/.config/beachcomber/providers/docker-context.sh') | fromjson }}"
+data = "{{ _.exec('~/.config/beachcomber/providers/docker-context.sh') | fromjson }}"
 result = "{{ data }}"
 return = "{{ result | poll('30s') }}"
 ```
@@ -1408,8 +1408,8 @@ echo "version=${version:-unknown}"
 
 ```toml
 [daemon.providers.node_version.sources.main]
-root = "{{ lup('package.json') | dirname }}"
-data = "{{ exec('~/.config/beachcomber/providers/node-version.sh') | fromini }}"
+root = "{{ _.lup('package.json') | dirname }}"
+data = "{{ _.exec('~/.config/beachcomber/providers/node-version.sh') | fromini }}"
 result.version = "{{ data[''].version }}"
 return = "{{ result | watch('.node-version', '.nvmrc', 'package.json', '.mise.toml') | poll('60s') }}"
 ```
@@ -1419,8 +1419,8 @@ return = "{{ result | watch('.node-version', '.nvmrc', 'package.json', '.mise.to
 **Ruby version via rbenv:**
 ```toml
 [daemon.providers.ruby_version.sources.main]
-root = "{{ lup('.ruby-version') | dirname }}"
-data = '''{{ exec("rbenv version-name 2>/dev/null || ruby --version | cut -d' ' -f2") | trim }}'''
+root = "{{ _.lup('.ruby-version') | dirname }}"
+data = '''{{ _.exec("rbenv version-name 2>/dev/null || ruby --version | cut -d' ' -f2") | trim }}'''
 result.value = "{{ data }}"
 return = "{{ result | watch('.ruby-version', 'Gemfile', '.tool-versions') | poll('120s') }}"
 ```
@@ -1451,7 +1451,7 @@ echo "name="
 
 ```toml
 [daemon.providers.vpn.sources.main]
-data = "{{ exec('~/.config/beachcomber/providers/vpn-status.sh') | fromini }}"
+data = "{{ _.exec('~/.config/beachcomber/providers/vpn-status.sh') | fromini }}"
 result.active = "{{ data[''].active }}"
 result.name = "{{ data[''].name }}"
 return = "{{ result | poll('10s') }}"
@@ -1461,15 +1461,15 @@ Query: `comb g vpn.active`
 
 ### HTTP
 
-A Source fetches over HTTP by calling `url()` in its `data` line. The request is made in the daemon process — no `curl` fork, no shell spawning, with proper timeout handling. `url(address, method='GET', headers={}, body=none, timeout='10s')` returns the response body as text; pipe it through `fromjson` to get a value `result` can read. `method` is `GET`, `POST`, `PUT` or `PATCH`. A non-2xx status fails the render, so the Source's execute fails and its `failback` applies.
+A Source fetches over HTTP by calling `_.url()` in its `data` line. The request is made in the daemon process — no `curl` fork, no shell spawning, with proper timeout handling. `_.url(address, method='GET', headers={}, body=none, timeout='10s')` returns the response body as text; pipe it through `fromjson` to get a value `result` can read. `method` is `GET`, `POST`, `PUT` or `PATCH`. A non-2xx status fails the render, so the Source's execute fails and its `failback` applies.
 
-> **Note:** `exec('curl …')` also works for a quick query, but for anything polling regularly `url()` avoids the 2-6ms process spawn per request.
+> **Note:** `_.exec('curl …')` also works for a quick query, but for anything polling regularly `_.url()` avoids the 2-6ms process spawn per request.
 
 **Basic API status check:**
 
 ```toml
 [daemon.providers.claude_status.sources.summary]
-data = "{{ url('https://status.anthropic.com/api/v2/summary.json') | fromjson }}"
+data = "{{ _.url('https://status.anthropic.com/api/v2/summary.json') | fromjson }}"
 result.indicator = "{{ data.status.indicator }}"
 return = "{{ result | poll('60s') }}"
 ```
@@ -1482,7 +1482,7 @@ Query: `comb g claude_status.indicator` returns `"none"`, `"minor"`, `"major"`, 
 
 ```toml
 [daemon.providers.github_rate.sources.main]
-data = "{{ url('https://api.github.com/rate_limit', headers={'Authorization': 'Bearer ' ~ env.GITHUB_TOKEN, 'Accept': 'application/json'}) | fromjson }}"
+data = "{{ _.url('https://api.github.com/rate_limit', headers={'Authorization': 'Bearer ' ~ env.GITHUB_TOKEN, 'Accept': 'application/json'}) | fromjson }}"
 result = "{{ data.rate }}"
 return = "{{ result | poll('30s') }}"
 ```
@@ -1495,7 +1495,7 @@ Secrets stay in the daemon's environment (`env.GITHUB_TOKEN`), not in config fil
 
 ```toml
 [daemon.providers.api_health.sources.main]
-data = "{{ url('https://internal.example.com/health') | fromjson }}"
+data = "{{ _.url('https://internal.example.com/health') | fromjson }}"
 result = "{{ data }}"
 return = "{{ result | poll('10s') }}"
 ```
@@ -1506,7 +1506,7 @@ If the endpoint returns JSON, its top-level keys become fields. For a non-JSON b
 
 ```toml
 [daemon.providers.exchange.sources.main]
-data = "{{ url('https://api.exchangerate-api.com/v4/latest/USD') | fromjson }}"
+data = "{{ _.url('https://api.exchangerate-api.com/v4/latest/USD') | fromjson }}"
 result.value = "{{ data.rates.AUD }}"
 return = "{{ result | poll('86400s') }}"
 ```
@@ -1515,9 +1515,9 @@ Query: `comb g exchange.value` — returns the AUD rate, refreshed daily.
 
 ### Failure handling and timeouts
 
-A Source that calls `url()` has the same lifecycle as any config Source:
+A Source that calls `_.url()` has the same lifecycle as any config Source:
 
-- **`timeout`** (default `"10s"`, set under `[daemon]`, or per Source with `| timeout('30s')` on its `return`) — the maximum time a single execute may take; `url()` also takes its own `timeout=` (default `'10s'`). A request that exceeds the limit fails and the last good cached value is retained.
+- **`timeout`** (default `"10s"`, set under `[daemon]`, or per Source with `| timeout('30s')` on its `return`) — the maximum time a single execute may take; `_.url()` also takes its own `timeout=` (default `'10s'`). A request that exceeds the limit fails and the last good cached value is retained.
 - **`failback(interval, count)`** on the `return` line (the shipped default is `failback('1s', 3)`) — after `count` consecutive failures the Source backs off exponentially, the first step being `interval` and the cap 8× `interval` (8 s with the shipped default). Attempts before the count are not delayed. The interval comes first, as in `poll`, and is a duration string: a number there (`failback(3, '1s')`, the count-first order) is a load error that says the order. A non-2xx response, a connection error and a timeout all count.
 
 A transient 5xx or network error will not remove the last cached value — consumers keep the last value, and `comb status` shows the failure on its row.
@@ -1549,7 +1549,7 @@ Then reference these in a Source's `data` line:
 
 ```toml
 [daemon.providers.github_rate.sources.main]
-data = "{{ url('https://api.github.com/rate_limit', headers={'Authorization': 'Bearer ' ~ env.GITHUB_TOKEN}) | fromjson }}"
+data = "{{ _.url('https://api.github.com/rate_limit', headers={'Authorization': 'Bearer ' ~ env.GITHUB_TOKEN}) | fromjson }}"
 result = "{{ data.rate }}"
 return = "{{ result | poll('30s') }}"
 ```
@@ -1585,8 +1585,8 @@ Then `chmod 600` and restart the daemon (`pkill -f 'comb daemon'` — it socket-
 
 - **Exit codes:** A non-zero exit from `exec` fails the refresh. The last cached value is retained. After repeated failures (the `failback(interval, count)` decorator; the abstract Source ships `failback('1s', 3)`), the Source enters exponential backoff from the interval (default 1s, 4 doubling levels).
 - **Stderr:** A command that succeeds has its stderr dropped. One that fails (a non-zero exit, a timeout) has the tail of its stderr in the error message the daemon logs for the refresh.
-- **Timeouts:** `exec` kills a command after `timeout` (default `'10s'`): `exec('slow-tool', timeout='30s')`. A timeout fails the refresh, and the next trigger retries it.
-- **Shell:** A string is executed via `sh -c`; a list (`exec(['cmd', 'arg'])`) is one argument per element with no shell. Use absolute paths for reliability, or ensure your PATH is set correctly in the daemon's environment.
+- **Timeouts:** `exec` kills a command after `timeout` (default `'10s'`): `_.exec('slow-tool', timeout='30s')`. A timeout fails the refresh, and the next trigger retries it.
+- **Shell:** A string is executed via `sh -c`; a list (`_.exec(['cmd', 'arg'])`) is one argument per element with no shell. Use absolute paths for reliability, or ensure your PATH is set correctly in the daemon's environment.
 - **Rooted Sources:** `data` runs with the instance's `root` as its working directory. A Source with no `root` is the one instance at `~`. A read from a directory takes each value from the instance at its nearest root, then the next root up, ending at `~`: a **cascade**, the default, which suits layered settings ([mise](https://mise.jdx.dev), [asdf](https://asdf-vm.com)'s `.tool-versions`) where a project sets some keys and `~` the rest. Add `| nearest` to `return` and the nearest instance answers alone: a key it lacks is absent, and a directory whose `root` renders none has no instance and no value (it does not fall back to `~`). That suits "the one you are in" (git, [direnv](https://direnv.net), a Python venv, a [terraform](https://developer.hashicorp.com/terraform) root): `return = "{{ result | watch('.git/HEAD') | nearest }}"`. Put `nearest` on a `_` prototype and reach it with `| super` to make a provider's Sources nearest together.
 - **Performance:** Every process spawn costs 2-6ms minimum. For Sources that poll frequently (< 30s), prefer `read` and `lup` over spawning CLI tools. See the design principles in [Performance](https://beachcomber.sh/docs/internals/performance#design-principles).
 

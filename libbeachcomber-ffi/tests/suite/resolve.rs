@@ -438,7 +438,12 @@ fn an_exec_child_of_a_call_with_no_env_inherits_the_process_path() {
         },
     );
 
-    let v = eval(client, r#"{{ exec('echo "$PATH"') | trim }}"#, "/tmp", None);
+    let v = eval(
+        client,
+        r#"{{ _.exec('echo "$PATH"') | trim }}"#,
+        "/tmp",
+        None,
+    );
     assert_eq!(hit(&v), &serde_json::json!(std::env::var("PATH").unwrap()));
 
     unsafe { bc_client_free(client) };

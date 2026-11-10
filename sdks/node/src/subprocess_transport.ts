@@ -22,7 +22,7 @@
  * on stdout, or `null` for a miss. Exit 2 is an error, reported as
  * `error: <who>: <why>`: an `error: <key>: ` line is the daemon's refusal of
  * `key` or the resolver's own error (a template that does not compile, a
- * cycle, a failed `exec()`), and an `error: <key>.<leaf>: ` line is a leaf
+ * cycle, a failed `_.exec()`), and an `error: <key>.<leaf>: ` line is a leaf
  * of a group failing. A wait `comb` cannot read is its usage error, which is
  * the library's `parse_error` in the library's words, as over FFI; a wait
  * that is not a string is the `parse_error` the ABI gives one.
@@ -32,7 +32,7 @@
  * The spawned `comb` is made to render as the FFI tier does:
  *
  * - **Environment.** A call's `env` map is the spawned `comb`'s whole
- *   environment, so `env.*` and an `exec()` child see exactly the map. With
+ *   environment, so `env.*` and an `_.exec()` child see exactly the map. With
  *   no map, the spawn inherits this process's environment, which is what the
  *   FFI tier renders with too.
  * - **Socket.** `--socket <p>` whenever the client has a `socketPath` or this
@@ -41,7 +41,7 @@
  * - **Colour.** `--color never` when the render's environment sets a
  *   non-empty `NO_COLOR`, else `--color always` (the template filters would
  *   otherwise draw nothing into a pipe): the rule `EngineCtx::colour` has.
- * - **`exec()`.** `--no-exec` unless the client was made with `exec: true`.
+ * - **`_.exec()`.** `--no-exec` unless the client was made with `exec: true`.
  *
  * `eval` is one spawn of `comb eval -f json [--path P | --global] --
  * <template>`, spawned as `get` is. Exit 0 is an answer: the value on
@@ -264,7 +264,7 @@ function cliGet(
       return { ok: false, error: { kind: 'server_error', message: own } };
     }
     // A leaf of a group failed. The daemon answered, so this is a server
-    // error whatever the words say — a failed `exec()` names a missing file,
+    // error whatever the words say — a failed `_.exec()` names a missing file,
     // which must not read as the daemon being unreachable.
     const leaf = lines.find(
       (line) => line.startsWith(`error: ${key}.`) || line.startsWith(`error: ${key}[`),

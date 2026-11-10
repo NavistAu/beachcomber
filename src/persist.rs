@@ -54,7 +54,7 @@ impl Persisted {
         })
     }
 
-    /// This entry at the current config schema: a `:template` put's strings
+    /// This entry at the current config schema: a `:template` or `:macro` put's strings
     /// through [`crate::config::migrate::template`]; any other data as it is.
     pub fn migrated(mut self) -> Self {
         let current = crate::config::migrate::current();
@@ -62,8 +62,12 @@ impl Persisted {
             return self;
         }
         let head = libbeachcomber::key::head_of(&self.key);
-        if libbeachcomber::key::parse_facet(head) == Ok(Some(libbeachcomber::key::Facet::Template))
-        {
+        if matches!(
+            libbeachcomber::key::parse_facet(head),
+            Ok(Some(
+                libbeachcomber::key::Facet::Template | libbeachcomber::key::Facet::Macro
+            ))
+        ) {
             migrate_strings(&mut self.data, self.schema);
         }
         self.schema = current;
@@ -190,7 +194,7 @@ mod tests {
             path: path.map(str::to_string),
             data: serde_json::json!(1),
             expires: None,
-            schema: 1,
+            schema: crate::config::migrate::current(),
         }
     }
 
@@ -221,6 +225,41 @@ mod tests {
         assert_eq!(read(&file), vec![entry("ns", None)]);
         store.expire("ns", None);
         assert_eq!(read(&file), Vec::<Persisted>::new());
+    }
+
+    /// A template or macro put stored at schema 1 is read at the current
+    /// schema, its calls through `_`; any other put's data is as it was.
+    #[test]
+    fn a_stored_template_put_is_migrated_on_load() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let file = dir.path().join("puts.json");
+        let old = |key: &str, data: serde_json::Value| Persisted {
+            data,
+            schema: 1,
+            ..entry(key, None)
+        };
+        let stored = [
+            old("p:template", serde_json::json!({"f": "{{ now() }}"})),
+            old(
+                "p:macro.m",
+                serde_json::json!("{% macro m() %}{{ lup('x') }}{% endmacro %}"),
+            ),
+            old("p", serde_json::json!({"f": "{{ now() }}"})),
+        ];
+        std::fs::write(&file, serde_json::to_vec(&stored).unwrap()).unwrap();
+        let (_, entries) = PutStore::open(file);
+        let data: Vec<_> = entries.iter().map(|e| (e.schema, e.data.clone())).collect();
+        assert_eq!(
+            data,
+            [
+                (2, serde_json::json!({"f": "{{ _.now() }}"})),
+                (
+                    2,
+                    serde_json::json!("{% macro m() %}{{ _.lup('x') }}{% endmacro %}")
+                ),
+                (2, serde_json::json!({"f": "{{ now() }}"})),
+            ]
+        );
     }
 
     #[test]

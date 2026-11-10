@@ -255,7 +255,7 @@ func WithConnectTimeoutMs(ms uint64) Option {
 }
 
 // WithExec sets whether a template this client renders ([Client.Get],
-// [Client.Eval]) may call exec(). Off by default: a template that calls it
+// [Client.Eval]) may call _.exec(). Off by default: a template that calls it
 // then fails with "exec() is disabled in this context".
 func WithExec(enabled bool) Option {
 	return func(opts map[string]interface{}) { opts["exec"] = enabled }

@@ -1141,7 +1141,7 @@ impl ProviderRegistry {
     /// The one loader: startup, the config watch's gate and `comb check
     /// config` all build the provider set here, so they agree on what loads.
     /// The config Sources (`[daemon.providers.<p>.sources.<s>]`, whose lines see
-    /// `vars`, the daemon's own variables, and call `plugin()` on
+    /// `vars`, the daemon's own variables, and call `_.plugin()` on
     /// `[daemon.plugin] path`) and the providers only the config names; then every
     /// check a config has: the per-file ones and the Sources against the set built.
     /// The shipped providers are layers of `config`, as any other file's are: a
@@ -1673,7 +1673,7 @@ result.x = "{{ data }}"
         std::fs::write(p.join(".marker"), "").unwrap();
         let (p_str, sub_str) = (p.to_str().unwrap(), sub.to_str().unwrap());
         let reg = registry_from(
-            "[daemon.providers.demo.sources.s]\nroot = \"{{ lup('.marker') | dirname }}\"\ndata = \"{{ 1 }}\"\nresult.x = \"{{ data }}\"\n",
+            "[daemon.providers.demo.sources.s]\nroot = \"{{ _.lup('.marker') | dirname }}\"\ndata = \"{{ 1 }}\"\nresult.x = \"{{ data }}\"\n",
         );
         let at = |d: &str| Ok(Found::At(d.to_string()));
 
@@ -1717,7 +1717,7 @@ result.x = "{{ data }}"
         age(&base);
         let sub_str = sub.to_str().unwrap();
         let reg = registry_from(
-            "[daemon.providers.demo.sources.s]\nroot = \"{{ lup('.root') | dirname }}\"\ndata = \"{{ 1 }}\"\nresult.x = \"{{ data }}\"\nreturn = \"{{ result | nearest }}\"\n",
+            "[daemon.providers.demo.sources.s]\nroot = \"{{ _.lup('.root') | dirname }}\"\ndata = \"{{ 1 }}\"\nresult.x = \"{{ data }}\"\nreturn = \"{{ result | nearest }}\"\n",
         );
 
         assert_eq!(reg.instance_root("demo", "s", sub_str), Ok(Found::Nothing));
@@ -1790,7 +1790,7 @@ result.x = "{{ data }}"
             b.to_str().unwrap(),
             c.to_str().unwrap(),
         );
-        let root = "root = \"{{ lup('.root') | dirname }}\"\ndata = \"{{ 1 }}\"\nresult.x = \"{{ data }}\"\n";
+        let root = "root = \"{{ _.lup('.root') | dirname }}\"\ndata = \"{{ 1 }}\"\nresult.x = \"{{ data }}\"\n";
         let reg = registry_from(&format!(
             "[daemon.providers.casc.sources.s]\n{root}\n\
              [daemon.providers.near.sources.s]\n{root}return = \"{{{{ result | nearest }}}}\"\n"
@@ -1817,7 +1817,7 @@ result.x = "{{ data }}"
         let dir = tempfile::tempdir().unwrap();
         let base = dir.path().canonicalize().unwrap();
         let reg = registry_from(
-            "[daemon.providers.demo.sources.s]\nroot = \"{{ exec('false') }}\"\ndata = \"{{ 1 }}\"\nresult.x = \"{{ data }}\"\n",
+            "[daemon.providers.demo.sources.s]\nroot = \"{{ _.exec('false') }}\"\ndata = \"{{ 1 }}\"\nresult.x = \"{{ data }}\"\n",
         );
         let ask = |name: &str| {
             let d = base.join(name);
@@ -1842,7 +1842,7 @@ result.x = "{{ data }}"
         let dir = tempfile::tempdir().unwrap();
         let base = dir.path().canonicalize().unwrap();
         let reg = registry_from(
-            "[daemon.providers.demo.sources.s]\nroot = \"{{ exec('false') }}\"\ndata = \"{{ 1 }}\"\nresult.x = \"{{ data }}\"\n",
+            "[daemon.providers.demo.sources.s]\nroot = \"{{ _.exec('false') }}\"\ndata = \"{{ 1 }}\"\nresult.x = \"{{ data }}\"\n",
         );
         let ask = |name: &str| {
             let d = base.join(name);
@@ -1934,7 +1934,7 @@ result.x = "{{ data }}"
         let dir = tempfile::tempdir().unwrap();
         let runs = dir.path().join("runs");
         let reg = registry_from(&format!(
-            "[daemon.providers.demo.sources.s]\nroot = \"{{{{ exec('echo x >> {}; false') }}}}\"\ndata = \"{{{{ 1 }}}}\"\nresult.x = \"{{{{ data }}}}\"\n",
+            "[daemon.providers.demo.sources.s]\nroot = \"{{{{ _.exec('echo x >> {}; false') }}}}\"\ndata = \"{{{{ 1 }}}}\"\nresult.x = \"{{{{ data }}}}\"\n",
             runs.display()
         ));
         let first = reg.instance_root("demo", "s", "/tmp").unwrap_err();
@@ -2331,7 +2331,7 @@ result.y = "{{ data }}"
              ~ sources.gone() }}\"\n\
              result.a = \"{{ data }}\"\n\
              [daemon.providers.q]\n\
-             result = \"{{ merge(sources) | merge(daemon.providers.nope.sources.t()) \
+             result = \"{{ _.merge(sources) | merge(daemon.providers.nope.sources.t()) \
              | merge(sources.nope()) }}\"\n\
              return = \"{{ result | merge(daemon.providers.p.sources.zap()) }}\"\n",
         );
@@ -2411,7 +2411,7 @@ result.y = "{{ data }}"
         age(dir.path());
         let config = crate::config::Config::from_toml(&format!(
             "[daemon.providers.p.sources.s]\n\
-             root = \"{{{{ exec(['sh', '-c', 'echo r >> {}; echo {}']) | trim }}}}\"\n\
+             root = \"{{{{ _.exec(['sh', '-c', 'echo r >> {}; echo {}']) | trim }}}}\"\n\
              data = \"{{{{ 1 }}}}\"\n\
              result.a = \"{{{{ data }}}}\"\n\
              return = \"{{{{ result | nearest }}}}\"\n",
@@ -2467,7 +2467,7 @@ result.y = "{{ data }}"
         let go = dir.path().join("go");
         let config = crate::config::Config::from_toml(&format!(
             "[daemon.providers.p.sources.t]\n\
-             data = \"{{{{ exec(['sh', '-c', 'while [ ! -e {} ]; do sleep 0.01; done; echo run >> {}; exit 3']) }}}}\"\n\
+             data = \"{{{{ _.exec(['sh', '-c', 'while [ ! -e {} ]; do sleep 0.01; done; echo run >> {}; exit 3']) }}}}\"\n\
              result.v = \"{{{{ data }}}}\"\n",
             go.display(),
             count.display()
@@ -2544,7 +2544,7 @@ result.y = "{{ data }}"
              data = \"{{{{ 2 }}}}\"\n\
              result.vc = \"{{{{ data }}}}\"\n\
              [daemon.providers.p.sources.a]\n\
-             data = \"{{{{ sources.b().vb if 'b' in exec(['cat', '{}']) else sources.c().vc }}}}\"\n\
+             data = \"{{{{ sources.b().vb if 'b' in _.exec(['cat', '{}']) else sources.c().vc }}}}\"\n\
              result.va = \"{{{{ data }}}}\"\n",
             flag.display()
         ));

@@ -398,7 +398,7 @@ fn read_after_mutation() {
 
     let layer: toml::Value = toml::from_str(
         "[daemon.providers.rstate.sources.s]\n\
-         root = \"{{ lup('.rstate') | dirname }}\"\n\
+         root = \"{{ _.lup('.rstate') | dirname }}\"\n\
          data = \"{{ 'state.json' | read | trim }}\"\n\
          result.v = \"{{ data }}\"\n\
          return = \"{{ result | watch('state.json') }}\"\n",

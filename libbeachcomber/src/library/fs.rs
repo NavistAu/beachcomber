@@ -304,7 +304,7 @@ pub(super) fn resolve_path(ctx: &EngineCtx, p: &str) -> Result<PathBuf, crate::p
     })
 }
 
-/// `lup(name, all=false, files=false, dirs=false, follow=true, git=false,
+/// `_.lup(name, all=false, files=false, dirs=false, follow=true, git=false,
 /// root=false)`: liblup's walk from `ctx.cwd`. The nearest path called
 /// `name` at or above it, as an absolute string, or `none`; with `all`, a list
 /// of every one, nearest first. The walk stops at `ctx.env["HOME"]` when the
@@ -550,7 +550,7 @@ mod tests {
     fn lup_stamps_a_hit_for_its_presence() {
         let (_d, root, ctx) = repo();
         let (ctx, touched) = recording(ctx);
-        eval_in(ctx, "lup('.git') ~ (lup('HEAD', all=true) | length)").unwrap();
+        eval_in(ctx, "_.lup('.git') ~ (_.lup('HEAD', all=true) | length)").unwrap();
         let hit = touched
             .touches()
             .into_iter()
@@ -569,27 +569,27 @@ mod tests {
             dirs.iter().map(|d| root.join(d).join(name)).collect()
         };
         assert_eq!(
-            read_by(ctx.clone(), "lup('.git')"),
+            read_by(ctx.clone(), "_.lup('.git')"),
             at(&["a/b/c", "a/b", "a"], ".git"),
             "to the hit"
         );
         assert_eq!(
-            read_by(ctx.clone(), "lup('.nothing')"),
+            read_by(ctx.clone(), "_.lup('.nothing')"),
             at(&["a/b/c", "a/b", "a", ""], ".nothing"),
             "to the boundary, HOME"
         );
         assert_eq!(
-            read_by(ctx.clone(), "lup('HEAD', all=true)"),
+            read_by(ctx.clone(), "_.lup('HEAD', all=true)"),
             at(&["a/b/c", "a/b", "a", ""], "HEAD"),
         );
         let mut git = at(&["a/b/c", "a/b", "a"], ".git");
         git.extend(at(&["a/b/c", "a/b", "a"], "x"));
         assert_eq!(
-            read_by(ctx.clone(), "lup('x', git=true)"),
+            read_by(ctx.clone(), "_.lup('x', git=true)"),
             git,
             "the walk to the repository's root, then the name to it"
         );
-        let to_slash = read_by(ctx, "lup('.nothing', root=true)");
+        let to_slash = read_by(ctx, "_.lup('.nothing', root=true)");
         assert_eq!(to_slash.last().unwrap(), std::path::Path::new("/.nothing"));
         assert_eq!(to_slash.len(), root.join("a/b/c").ancestors().count());
     }
@@ -622,7 +622,7 @@ mod tests {
         assert!(EngineCtx::default().touched.is_none());
         let (_d, _root, ctx) = repo();
         for expr in [
-            "lup('.git')",
+            "_.lup('.git')",
             "('nope' | read) is undefined",
             "'~/a' | realpath",
         ] {
@@ -953,17 +953,20 @@ mod tests {
     fn lup_finds_the_nearest_path_at_or_above_cwd() {
         let (_d, root, ctx) = repo();
         let want = root.join("a/.git");
-        assert_eq!(eval_in(ctx, "lup('.git')").unwrap(), want.to_str().unwrap());
+        assert_eq!(
+            eval_in(ctx, "_.lup('.git')").unwrap(),
+            want.to_str().unwrap()
+        );
     }
 
     #[test]
     fn lup_miss_is_undefined() {
         let (_d, _root, ctx) = repo();
         assert_eq!(
-            eval_in(ctx, "lup('.nothing-here') is undefined").unwrap(),
+            eval_in(ctx, "_.lup('.nothing-here') is undefined").unwrap(),
             "True"
         );
-        assert_eq!(eval("lup('.git') is undefined").unwrap(), "True");
+        assert_eq!(eval("_.lup('.git') is undefined").unwrap(), "True");
     }
 
     #[test]
@@ -973,7 +976,7 @@ mod tests {
         let cwd = root.join("a/b/c");
         let home = root.join("a/b");
         let ctx = ctx_with(&[("HOME", home.to_str().unwrap())], Some(&cwd));
-        assert_eq!(eval_in(ctx, "lup('.git') is undefined").unwrap(), "True");
+        assert_eq!(eval_in(ctx, "_.lup('.git') is undefined").unwrap(), "True");
     }
 
     #[test]
@@ -986,7 +989,7 @@ mod tests {
             root.join("a/b/.env").to_str().unwrap(),
             root.join(".env").to_str().unwrap()
         );
-        assert_eq!(eval_in(ctx, "lup('.env', all=true)").unwrap(), want);
+        assert_eq!(eval_in(ctx, "_.lup('.env', all=true)").unwrap(), want);
     }
 
     #[test]
@@ -994,11 +997,11 @@ mod tests {
         let (_d, root, ctx) = repo();
         std::fs::write(root.join("a/b/.git"), "gitdir: elsewhere\n").unwrap();
         assert_eq!(
-            eval_in(ctx.clone(), "lup('.git')").unwrap(),
+            eval_in(ctx.clone(), "_.lup('.git')").unwrap(),
             root.join("a/b/.git").to_str().unwrap()
         );
         assert_eq!(
-            eval_in(ctx, "lup('.git', dirs=true)").unwrap(),
+            eval_in(ctx, "_.lup('.git', dirs=true)").unwrap(),
             root.join("a/.git").to_str().unwrap()
         );
     }
@@ -1008,11 +1011,11 @@ mod tests {
         let (_d, root, ctx) = repo();
         std::fs::write(root.join(".env"), "").unwrap();
         assert_eq!(
-            eval_in(ctx.clone(), "lup('.env')").unwrap(),
+            eval_in(ctx.clone(), "_.lup('.env')").unwrap(),
             root.join(".env").to_str().unwrap()
         );
         assert_eq!(
-            eval_in(ctx, "lup('.env', git=true) is undefined").unwrap(),
+            eval_in(ctx, "_.lup('.env', git=true) is undefined").unwrap(),
             "True"
         );
     }
@@ -1022,7 +1025,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let ctx = ctx_with(&[], Some(dir.path()));
         assert_eq!(
-            eval_in(ctx, "lup('.env', git=true) is undefined").unwrap(),
+            eval_in(ctx, "_.lup('.env', git=true) is undefined").unwrap(),
             "True"
         );
     }
@@ -1034,7 +1037,7 @@ mod tests {
         std::os::unix::fs::symlink(root.join("a/b/c"), &link).unwrap();
         let ctx = ctx_with(&[("HOME", root.to_str().unwrap())], Some(&link));
         assert_eq!(
-            eval_in(ctx, "lup('.git')").unwrap(),
+            eval_in(ctx, "_.lup('.git')").unwrap(),
             root.join("a/.git").to_str().unwrap()
         );
     }
@@ -1042,11 +1045,11 @@ mod tests {
     #[test]
     fn lup_exclusive_options_are_errors() {
         let (_d, _root, ctx) = repo();
-        let err = eval_in(ctx.clone(), "lup('.git', files=true, dirs=true)").unwrap_err();
+        let err = eval_in(ctx.clone(), "_.lup('.git', files=true, dirs=true)").unwrap_err();
         assert!(err.contains("files= and dirs="), "unexpected error: {err}");
-        let err = eval_in(ctx.clone(), "lup('.git', git=true, root=true)").unwrap_err();
+        let err = eval_in(ctx.clone(), "_.lup('.git', git=true, root=true)").unwrap_err();
         assert!(err.contains("git= and root="), "unexpected error: {err}");
-        let err = eval_in(ctx, "lup('.git', all='yes')").unwrap_err();
+        let err = eval_in(ctx, "_.lup('.git', all='yes')").unwrap_err();
         assert!(err.contains("all= must be"), "unexpected error: {err}");
     }
 
@@ -1054,7 +1057,7 @@ mod tests {
     fn root_line_from_the_spec() {
         let (_d, root, ctx) = repo();
         assert_eq!(
-            eval_in(ctx, "lup('.git') | dirname").unwrap(),
+            eval_in(ctx, "_.lup('.git') | dirname").unwrap(),
             root.join("a").to_str().unwrap()
         );
     }
@@ -1063,7 +1066,7 @@ mod tests {
     fn head_line_from_the_spec() {
         let (_d, _root, ctx) = repo();
         assert_eq!(
-            eval_in(ctx, "lup('.git/HEAD') | read | trim").unwrap(),
+            eval_in(ctx, "_.lup('.git/HEAD') | read | trim").unwrap(),
             "ref: refs/heads/main"
         );
     }

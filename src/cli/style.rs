@@ -5,7 +5,7 @@
 //! set to something (an empty `NO_COLOR` is unset, as no-color.org has it).
 //! `main` writes the flag into the environment before anything runs, so the
 //! template filters (`fg`, `bg`, `bold`, `dim`), which read `NO_COLOR` from
-//! the render's environment, and every `exec()` child see the same choice.
+//! the render's environment, and every `_.exec()` child see the same choice.
 //! A table is coloured only on a terminal unless `--color always` says so; a
 //! template filter is not, since a prompt reads it through a pipe.
 

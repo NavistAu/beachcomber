@@ -18,7 +18,7 @@
 //! A hit ends the render at once, as an error carrying the memo ([`MemoHit`]),
 //! which the evaluator turns back into the leaf's value
 //! ([`crate::eval::evaluate`]). So whatever follows `cache()` in the leaf — an
-//! `exec()` above all — never runs on a hit.
+//! `_.exec()` above all — never runs on a hit.
 
 use super::{is_absent, is_absent_text};
 use crate::engine::{EngineCtx, ctx, op_error};

@@ -280,10 +280,10 @@ mod tests {
 
     #[test]
     fn now_is_the_renders_clock() {
-        assert_eq!(at("now()").unwrap(), T.to_string());
-        assert_eq!(at("now() - 3600").unwrap(), (T - 3600).to_string());
-        assert_eq!(eval_at(1500, &[], "now()").unwrap(), "1");
-        for bad in ["now(1)", "now(x=1)"] {
+        assert_eq!(at("_.now()").unwrap(), T.to_string());
+        assert_eq!(at("_.now() - 3600").unwrap(), (T - 3600).to_string());
+        assert_eq!(eval_at(1500, &[], "_.now()").unwrap(), "1");
+        for bad in ["_.now(1)", "_.now(x=1)"] {
             let err = at(bad).unwrap_err();
             assert!(err.contains("now():"), "{bad}: {err}");
         }
@@ -291,14 +291,14 @@ mod tests {
 
     #[test]
     fn strftime_formats_in_the_zone() {
-        assert_eq!(at("now() | strftime('%H:%M')").unwrap(), "03:00");
+        assert_eq!(at("_.now() | strftime('%H:%M')").unwrap(), "03:00");
         assert_eq!(
-            at("now() | strftime('%F %T')").unwrap(),
+            at("_.now() | strftime('%F %T')").unwrap(),
             "2026-10-07 03:00:00"
         );
         // tz= wins over TZ.
         assert_eq!(
-            at("now() | strftime('%F %H', tz='Australia/Sydney')").unwrap(),
+            at("_.now() | strftime('%F %H', tz='Australia/Sydney')").unwrap(),
             "2026-10-07 14"
         );
         assert_eq!(
@@ -310,7 +310,7 @@ mod tests {
             eval_at(
                 T * 1000,
                 &[("TZ", "Australia/Sydney")],
-                "now() | strftime('%H')"
+                "_.now() | strftime('%H')"
             )
             .unwrap(),
             "14"
@@ -394,23 +394,26 @@ mod tests {
         }
         // scanline's "a missing timestamp means now".
         assert_eq!(
-            at("(missing | fromiso) | default(now(), true)").unwrap(),
+            at("(missing | fromiso) | default(_.now(), true)").unwrap(),
             T.to_string()
         );
     }
 
     #[test]
     fn ago_is_the_distance_to_now() {
-        assert_eq!(at("(now() - 11520) | ago").unwrap(), "3h12m ago");
-        assert_eq!(at("(now() + 11520) | ago").unwrap(), "in 3h12m");
-        assert_eq!(at("(now() - 90) | ago").unwrap(), "1m30s ago");
-        assert_eq!(at("(now() - 11520) | ago(1)").unwrap(), "3h ago");
-        assert_eq!(at("(now() - 11520) | ago(floor='h')").unwrap(), "3h ago");
+        assert_eq!(at("(_.now() - 11520) | ago").unwrap(), "3h12m ago");
+        assert_eq!(at("(_.now() + 11520) | ago").unwrap(), "in 3h12m");
+        assert_eq!(at("(_.now() - 90) | ago").unwrap(), "1m30s ago");
+        assert_eq!(at("(_.now() - 11520) | ago(1)").unwrap(), "3h ago");
+        assert_eq!(at("(_.now() - 11520) | ago(floor='h')").unwrap(), "3h ago");
         // Under the floor, now.
-        assert_eq!(at("now() | ago").unwrap(), "now");
-        assert_eq!(at("(now() - 30) | ago(floor='m')").unwrap(), "now");
-        assert_eq!(at("(now() - 0.4) | ago").unwrap(), "now");
-        assert_eq!(at("(now() - 0.4) | ago(floor='ms')").unwrap(), "400ms ago");
+        assert_eq!(at("_.now() | ago").unwrap(), "now");
+        assert_eq!(at("(_.now() - 30) | ago(floor='m')").unwrap(), "now");
+        assert_eq!(at("(_.now() - 0.4) | ago").unwrap(), "now");
+        assert_eq!(
+            at("(_.now() - 0.4) | ago(floor='ms')").unwrap(),
+            "400ms ago"
+        );
         assert_eq!(at("(none | ago) is undefined").unwrap(), "True");
         for bad in [
             "'x' | ago",
@@ -427,21 +430,21 @@ mod tests {
     fn spinner_picks_a_frame_by_the_clock() {
         let frame = |ms: u64, expr: &str| eval_at(ms, &[], expr).unwrap();
         for (ms, want) in [(0, "a"), (999, "a"), (1000, "b"), (2000, "c"), (3000, "a")] {
-            assert_eq!(frame(ms, "spinner('abc')"), want, "{ms}");
+            assert_eq!(frame(ms, "_.spinner('abc')"), want, "{ms}");
         }
-        assert_eq!(frame(250, "spinner('abc', '250ms')"), "b");
-        assert_eq!(frame(500, "spinner('abc', step='250ms')"), "c");
-        assert_eq!(frame(10_000, "spinner(['x', 'y'], 5)"), "x");
-        assert_eq!(frame(5_000, "spinner(['x', 'y'], 5)"), "y");
-        assert_eq!(frame(0, "spinner(none) is undefined"), "True");
+        assert_eq!(frame(250, "_.spinner('abc', '250ms')"), "b");
+        assert_eq!(frame(500, "_.spinner('abc', step='250ms')"), "c");
+        assert_eq!(frame(10_000, "_.spinner(['x', 'y'], 5)"), "x");
+        assert_eq!(frame(5_000, "_.spinner(['x', 'y'], 5)"), "y");
+        assert_eq!(frame(0, "_.spinner(none) is undefined"), "True");
         for bad in [
-            "spinner('')",
-            "spinner([])",
-            "spinner('ab', '0ms')",
-            "spinner('ab', 'soon')",
-            "spinner(3)",
-            "spinner()",
-            "spinner('ab', '1s', 3)",
+            "_.spinner('')",
+            "_.spinner([])",
+            "_.spinner('ab', '0ms')",
+            "_.spinner('ab', 'soon')",
+            "_.spinner(3)",
+            "_.spinner()",
+            "_.spinner('ab', '1s', 3)",
         ] {
             let err = eval_at(0, &[], bad).unwrap_err();
             assert!(err.contains("spinner():"), "`{bad}` gave `{err}`");

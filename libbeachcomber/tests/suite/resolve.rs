@@ -233,12 +233,11 @@ fn now_is_one_value_per_resolution() {
     let vars = spec_env();
     let mut f = MapFetch::default();
     let p = Some(CWD);
-    let tree =
-        json!({ "a": "{{ now() }}", "b": "{{ now() - 60 }}", "c": "{{ spinner('ab', '10s') }}" });
+    let tree = json!({ "a": "{{ _.now() }}", "b": "{{ _.now() - 60 }}", "c": "{{ _.spinner('ab', '10s') }}" });
     f.seed("clock", p, tmpl(tree))
-        .seed("clock.a", p, tmpl(json!("{{ now() }}")))
-        .seed("clock.b", p, tmpl(json!("{{ now() - 60 }}")))
-        .seed("clock.c", p, tmpl(json!("{{ spinner('ab', '10s') }}")));
+        .seed("clock.a", p, tmpl(json!("{{ _.now() }}")))
+        .seed("clock.b", p, tmpl(json!("{{ _.now() - 60 }}")))
+        .seed("clock.c", p, tmpl(json!("{{ _.spinner('ab', '10s') }}")));
     let mut i = inputs(&vars);
     i.now = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_791_342_010);
     let got = resolve("clock", &i, &mut f).unwrap().unwrap();
@@ -1092,7 +1091,7 @@ fn a_chain_of_distinct_keys_is_bounded_by_the_depth_limit() {
 
 // ── 9. exec() ─────────────────────────────────────────────────────────────────
 
-const EXEC_TMPL: &str = "{{ exec(['printf', 'x']) }}";
+const EXEC_TMPL: &str = "{{ _.exec(['printf', 'x']) }}";
 
 #[test]
 fn exec_runs_when_the_surface_allows_it() {
@@ -1125,7 +1124,7 @@ fn exec_runs_in_the_template_form_too_and_is_refused_the_same_way() {
     // surface's decision reaches a template exactly as it reaches a tag.
     let env = spec_env();
     let mut f = MapFetch::default();
-    let src = "prefix {{ exec(['printf', 'x']) }} suffix";
+    let src = "prefix {{ _.exec(['printf', 'x']) }} suffix";
     let mut i = inputs(&env);
     i.allow_exec = true;
     assert_eq!(
@@ -1149,7 +1148,7 @@ fn a_failing_command_is_a_runtime_error_not_a_config_error() {
     let mut f = MapFetch::default();
     let mut i = inputs(&env);
     i.allow_exec = true;
-    for src in ["{{ exec('exit 3') }}", "[{{ exec('exit 3') }}]"] {
+    for src in ["{{ _.exec('exit 3') }}", "[{{ _.exec('exit 3') }}]"] {
         match eval(src, &i, &mut f).unwrap_err() {
             ResolveError::Runtime(m) => {
                 assert!(!m.contains("compile error"), "{src}: {m}");
@@ -1202,7 +1201,7 @@ fn an_exec_argument_may_be_a_ref_to_another_template() {
     f.seed(
         "chain.a",
         Some(CWD),
-        tmpl(json!("{{ exec(['printf', chain.b]) }}")),
+        tmpl(json!("{{ _.exec(['printf', chain.b]) }}")),
     )
     .seed("chain.b", Some(CWD), tmpl(json!("{{ 'bee' }}")));
     let mut i = inputs(&env);
@@ -2120,7 +2119,7 @@ fn a_templates_files_are_read_in_the_addressed_directory() {
 
 /// A leaf whose every render appends one `x` to the file `$COUNT` names, and
 /// whose value is `v`: the file's length is how many times it rendered.
-const COUNTED: &str = r#"{{ exec('printf x >> "$COUNT"; printf v') }}"#;
+const COUNTED: &str = r#"{{ _.exec('printf x >> "$COUNT"; printf v') }}"#;
 
 /// `k.shared` read from five places in one resolution: directly, through two
 /// other templates, and through both leaves of a group read whole.
@@ -2178,7 +2177,7 @@ fn a_node_that_failed_to_render_is_not_rendered_again() {
     f.seed(
         "k.fail",
         Some(CWD),
-        tmpl(json!(r#"{{ exec('printf x >> "$COUNT"; exit 3') }}"#)),
+        tmpl(json!(r#"{{ _.exec('printf x >> "$COUNT"; exit 3') }}"#)),
     )
     .seed(
         "g",

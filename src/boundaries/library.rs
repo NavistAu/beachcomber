@@ -1,6 +1,6 @@
 //! Dynamic library loader boundary trait.
 //!
-//! The seam between `plugin()` (`crate::engine::PluginSet`) and the real
+//! The seam between `_.plugin()` (`crate::engine::PluginSet`) and the real
 //! `libloading` crate. Every call into a plugin symbol goes through
 //! [`call_symbol`], whether `dlsym` found it (`LibloadingLoadedLibrary`) or the
 //! compiled-in table did (`crate::plugin::StaticLibrary`); the engine only

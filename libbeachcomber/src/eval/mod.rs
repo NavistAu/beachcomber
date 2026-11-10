@@ -246,8 +246,8 @@ fn string_literal(text: &str) -> Option<(String, &str)> {
 
 /// An engine to read lines in without running them: what compiles in its
 /// environment, and the names of that environment's globals, collected once.
-/// The engine's analysis of a line can report a function it calls by name
-/// (`exec(...)`, `lup(...)`) as a name it reads; that is no name a context
+/// The engine's analysis of a line reports a global it reads (`_` in
+/// `_.lup(...)`, `range(...)`) as a name it reads; that is no name a context
 /// supplies, and every reading here ([`undeclared_names`], [`discover_refs`],
 /// [`lint`]) leaves the globals out. Built once for the lines read alike (a
 /// load's, a resolution's) and handed to each reading, not once per line.
@@ -274,7 +274,7 @@ impl<'e> Probe<'e> {
     ) -> impl Iterator<Item = String> {
         names
             .into_iter()
-            // `log.warn` is read as the nested name, so the head is the global.
+            // `_.log.warn` is read as the nested name, so the head is the global.
             .filter(|name| {
                 !self
                     .globals
@@ -488,7 +488,18 @@ pub fn evaluate(
         Ok(value) => value,
         Err(e) => match hit_in(&e) {
             Some(MemoHit(memo)) => return Ok(memo.as_ref().map(|v| MjValue::from(Serde(v)))),
-            None => return Err(EvalError::runtime(form, &e)),
+            // A bare call of a function that moved under `_` fails as an
+            // unknown name or a value not callable: say where it went.
+            None => match bare_calls(env, src).first() {
+                Some((_, spelled)) => {
+                    return Err(EvalError::Runtime {
+                        form,
+                        message: moved(spelled),
+                        fatal: false,
+                    });
+                }
+                None => return Err(EvalError::runtime(form, &e)),
+            },
         },
     };
     Ok((!(value.is_undefined() || value.is_none())).then_some(value))
@@ -610,7 +621,17 @@ pub fn undeclared_names(
     src: &str,
     nested: bool,
 ) -> Result<std::collections::BTreeSet<String>, String> {
-    let env = probe.env();
+    Ok(probe
+        .not_globals(read_names(probe.env(), src, nested)?)
+        .collect())
+}
+
+/// What [`undeclared_names`] reads, globals and all.
+fn read_names(
+    env: &Environment<'_>,
+    src: &str,
+    nested: bool,
+) -> Result<std::collections::BTreeSet<String>, String> {
     let names = match single_tag_expression(src) {
         Some(expr) => env
             .compile_expression(expr)
@@ -621,9 +642,44 @@ pub fn undeclared_names(
             .map_err(|e| e.to_string())?
             .undeclared_variables(nested),
     };
-    // A registered function called in a template (`exec(...)`) is reported
-    // too: it is not a name the context supplies.
-    Ok(probe.not_globals(names).collect())
+    // A registered function called in a template is reported too: it is not
+    // a name the context supplies, and the caller leaves the globals out.
+    Ok(names.into_iter().collect())
+}
+
+// ── Functions called through `_` ──────────────────────────────────────────────
+
+/// Each call in `src` of a library function by its bare name, which it is no
+/// longer called by (`lup(...)` is `_.lup(...)`): where it starts and how it
+/// is spelled (`lup`, `log.warn`). A name `src` declares itself (a macro, a
+/// `set`, an import) is its own, not a call of comb's; a text that does not
+/// compile in `env` is read by the scan alone.
+pub fn bare_calls(env: &Environment<'_>, src: &str) -> Vec<(usize, String)> {
+    let calls = scan::bare_calls(src);
+    if calls.is_empty() {
+        return calls;
+    }
+    match read_names(env, src, false) {
+        Ok(read) => calls
+            .into_iter()
+            .filter(|(_, spelled)| read.contains(spelled.split('.').next().unwrap_or(spelled)))
+            .collect(),
+        Err(_) => calls,
+    }
+}
+
+/// What a bare call of a function spelled `spelled` (`lup`, `log.warn`) says.
+pub fn moved(spelled: &str) -> String {
+    format!("{spelled}() is now _.{spelled}(): comb's functions are called through _")
+}
+
+/// `src` with each [bare call](bare_calls) written through `_`.
+pub fn through_underscore(env: &Environment<'_>, src: &str) -> String {
+    let mut out = src.to_string();
+    for (at, _) in bare_calls(env, src).into_iter().rev() {
+        out.insert_str(at, "_.");
+    }
+    out
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -643,7 +699,7 @@ mod tests {
     }
 
     /// `src` rendered over `ctx`'s fields as locals, with no daemon behind
-    /// it and `exec()` off: what a `-f` template sees of the value it formats.
+    /// it and `_.exec()` off: what a `-f` template sees of the value it formats.
     fn render_template(src: &str, ctx: &serde_json::Value) -> Result<String, String> {
         use crate::resolve::{Fetch, FetchError, Got, Inputs, Slot, eval_with};
         struct NoDaemon;
@@ -685,7 +741,7 @@ mod tests {
     fn log_and_fail_are_not_provider_refs() {
         assert_eq!(
             discover_refs(
-                "{{ log.warn('x') }}{% if a %}{{ fail('y') }}{% endif %}{{ git.branch }}"
+                "{{ _.log.warn('x') }}{% if a %}{{ _.fail('y') }}{% endif %}{{ git.branch }}"
             ),
             vec![resolved("git", "branch"), Ref::Dynamic("a".into())]
         );
@@ -1051,7 +1107,7 @@ mod line_tests {
     }
 
     /// A hit ends the render with the memo, and nothing after `cache()` runs:
-    /// the `exec('false')` here would fail.
+    /// the `_.exec('false')` here would fail.
     #[test]
     fn a_memo_hit_aborts_a_single_tag() {
         assert_eq!(
@@ -1127,8 +1183,8 @@ mod line_tests {
                 EvalError::Runtime { fatal: true, .. }
             )
         };
-        assert!(fatal("{{ log.fatal('gone') }}"));
-        assert!(!fatal("{{ log.error('gone') }}"));
+        assert!(fatal("{{ _.log.fatal('gone') }}"));
+        assert!(!fatal("{{ _.log.error('gone') }}"));
     }
 
     #[test]
@@ -1183,7 +1239,7 @@ mod line_tests {
             vec!["comb", "env"]
         );
         assert_eq!(
-            names("a {{ data | trim }} {{ exec('x') }}")
+            names("a {{ data | trim }} {{ _.exec('x') }}")
                 .into_iter()
                 .collect::<Vec<_>>(),
             vec!["data"]

@@ -698,7 +698,7 @@ mod tests {
     #[test]
     fn an_explicit_result_decides_which_source_wins() {
         let registry = demo_registry(
-            "[daemon.providers.demo]\nresult = \"{{ merge(sources.b(), sources.a()) }}\"\n\
+            "[daemon.providers.demo]\nresult = \"{{ _.merge(sources.b(), sources.a()) }}\"\n\
              [daemon.providers.demo.sources.c]\ndata = \"{{ 3 }}\"\nresult.x = \"{{ data }}\"\n",
         );
         let cache = Cache::new();
@@ -713,7 +713,7 @@ mod tests {
     #[test]
     fn a_leaf_a_result_computes_is_labelled_and_as_old_as_its_inputs() {
         let registry = demo_registry(
-            "[daemon.providers.demo]\nresult = \"{{ merge(sources) | merge({'z': 9}) }}\"\n",
+            "[daemon.providers.demo]\nresult = \"{{ _.merge(sources) | merge({'z': 9}) }}\"\n",
         );
         let cache = Cache::new();
         store_demo(&cache, "a", "x", 1);
@@ -741,7 +741,7 @@ mod tests {
     #[test]
     fn two_sources_holding_the_same_value_do_not_pick_one() {
         let registry = demo_registry(
-            "[daemon.providers.demo]\nresult = \"{{ merge(sources.a(), sources.b()) }}\"\n",
+            "[daemon.providers.demo]\nresult = \"{{ _.merge(sources.a(), sources.b()) }}\"\n",
         );
         let cache = Cache::new();
         store_demo(&cache, "a", "x", 1);
@@ -757,7 +757,7 @@ mod tests {
     #[test]
     fn the_native_default_merge_equals_the_rendered_one() {
         let rendered = demo_registry(
-            "[daemon.providers.demo]\nresult = \"{{ merge(sources.a(), sources.b()) }}\"\n",
+            "[daemon.providers.demo]\nresult = \"{{ _.merge(sources.a(), sources.b()) }}\"\n",
         );
         let native = demo_registry("");
         let cache = Cache::new();

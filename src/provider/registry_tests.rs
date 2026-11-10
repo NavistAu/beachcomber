@@ -196,7 +196,7 @@ fn a_definition_is_the_body_and_not_the_schedule() {
     assert_eq!(load("{{ 1 }}", "", "9s").definition("p", "s"), same);
     assert_ne!(load("{{ 2 }}", "", "5s").definition("p", "s"), same);
     assert_ne!(
-        load("{{ 1 }}", "{{ exec('pwd') }}", "5s").definition("p", "s"),
+        load("{{ 1 }}", "{{ _.exec('pwd') }}", "5s").definition("p", "s"),
         same,
         "a changed root is a changed definition"
     );

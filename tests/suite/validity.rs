@@ -248,7 +248,7 @@ async fn a_source_that_only_polls_is_checked_for_its_lifetime_only() {
     std::fs::write(&state, "1").unwrap();
     let s = serve(&format!(
         "[daemon.providers.w.sources.s]\n\
-         data = \"{{{{ exec(['cat', '{}']) }}}}\"\n\
+         data = \"{{{{ _.exec(['cat', '{}']) }}}}\"\n\
          result.v = \"{{{{ data }}}}\"\n\
          return = \"{{{{ result | poll('60s') }}}}\"\n",
         state.display()
@@ -318,8 +318,8 @@ async fn a_racy_same_size_write_is_caught_after_the_window() {
 /// directory holding `.rmark`, whose value is the nearest `state.json` above
 /// its root: the files it checks are the ones its lines read.
 const READS_NEAREST: &str = "[daemon.providers.r.sources.s]\n\
-     root = \"{{ lup('.rmark') | dirname }}\"\n\
-     data = \"{{ lup('state.json') | read }}\"\n\
+     root = \"{{ _.lup('.rmark') | dirname }}\"\n\
+     data = \"{{ _.lup('state.json') | read }}\"\n\
      result.v = \"{{ data }}\"\n\
      return = \"{{ result | poll('10m') }}\"\n";
 

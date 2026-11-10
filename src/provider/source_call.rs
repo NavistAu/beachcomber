@@ -495,7 +495,7 @@ pub enum Called {
 /// The Sources `line` calls, each once, sorted. A `daemon` or `sources.` read
 /// any other way than the call is an error: the call is the one way, and a
 /// Source named any other way could not be warmed before the line renders.
-/// A bare `sources` (the map itself, as `merge(sources)` takes it) is the
+/// A bare `sources` (the map itself, as `_.merge(sources)` takes it) is the
 /// caller's to allow or refuse.
 pub fn called_in(probe: &Probe<'_>, line: &str) -> Result<Vec<Called>, String> {
     calls_in(&undeclared_names(probe, line, true)?)
@@ -557,7 +557,7 @@ mod tests {
                 Called::Of("q".into(), "s".into())
             ]
         );
-        assert_eq!(called("{{ merge(sources) }}").unwrap(), vec![]);
+        assert_eq!(called("{{ _.merge(sources) }}").unwrap(), vec![]);
         assert!(called("{{ daemon.providers.q }}").is_err());
         assert!(called("{{ sources.b.x }}").is_err());
     }

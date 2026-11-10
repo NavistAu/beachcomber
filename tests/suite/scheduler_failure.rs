@@ -154,7 +154,7 @@ async fn a_non_2xx_url_fails_the_source_and_backs_off() {
     let config = Config::from_toml(&format!(
         r#"
 [daemon.providers.claude.sources.summary]
-data = "{{{{ url('{}/summary.json') | fromjson }}}}"
+data = "{{{{ _.url('{}/summary.json') | fromjson }}}}"
 result.indicator = "{{{{ data.status.indicator }}}}"
 return = "{{{{ result | poll('60s') | failback('60s', 3) }}}}"
 "#,
@@ -304,7 +304,7 @@ impl Mode {
         Config::from_toml(&format!(
             r#"
 [daemon.providers.p.sources.s]
-data = "{{% set n = exec('echo >> {d}/count') %}}{{{{ log.fatal('boom') if ('{d}/mode' | read | trim) == 'fatal' else (fail('soft') if ('{d}/mode' | read | trim) == 'error' else ('{d}/mode' | read | trim)) }}}}"
+data = "{{% set n = _.exec('echo >> {d}/count') %}}{{{{ _.log.fatal('boom') if ('{d}/mode' | read | trim) == 'fatal' else (_.fail('soft') if ('{d}/mode' | read | trim) == 'error' else ('{d}/mode' | read | trim)) }}}}"
 result.v = "{{{{ data }}}}"
 return = "{{{{ result | poll('1h') | failback('{failback}', 1) }}}}"
 "#,

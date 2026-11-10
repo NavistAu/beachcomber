@@ -1,9 +1,9 @@
-//! `log.debug/info/warn/error/fatal(msg)` and `fail(msg)`: a line a template
+//! `log.debug/info/warn/error/fatal(msg)` and `_.fail(msg)`: a line a template
 //! writes, and the way it fails a render on purpose.
 //!
 //! `debug`, `info` and `warn` emit a `tracing` event and the render goes on.
 //! `error` and `fatal` fail the render through [`op_error`], so they take the
-//! path a failed `exec()` takes. `fail(msg)` is `log.error(msg)`.
+//! path a failed `_.exec()` takes. `_.fail(msg)` is `_.log.error(msg)`.
 
 use crate::engine::{ctx, op_error};
 use minijinja::value::{Object, Value as MjValue};
@@ -178,7 +178,7 @@ mod tests {
     fn each_level_renders_nothing_and_logs_at_its_level_with_the_origin() {
         for (m, lvl) in [("debug", "DEBUG"), ("info", "INFO"), ("warn", "WARN")] {
             let origin = format!("lvl.{m}");
-            let lines = run(Some(&origin), &[&format!("log.{m}('hi')")]);
+            let lines = run(Some(&origin), &[&format!("_.log.{m}('hi')")]);
             assert_eq!(lines.len(), 1, "{lines:?}");
             assert!(lines[0].contains(lvl), "{lines:?}");
             assert!(
@@ -191,13 +191,13 @@ mod tests {
 
     #[test]
     fn a_non_string_is_stringified() {
-        let lines = run(Some("t.nonstr"), &["log.info(42)"]);
+        let lines = run(Some("t.nonstr"), &["_.log.info(42)"]);
         assert!(lines[0].contains("42"), "{lines:?}");
     }
 
     #[test]
     fn error_and_fail_fail_with_the_message() {
-        for e in ["log.error('no ssh agent')", "fail('no ssh agent')"] {
+        for e in ["_.log.error('no ssh agent')", "_.fail('no ssh agent')"] {
             let err = eval_in(ctx_with(&[], None), e).unwrap_err();
             assert_eq!(
                 crate::eval::without_engine_frame(&err),
@@ -214,16 +214,16 @@ mod tests {
             let e = env.compile_expression(src).unwrap().eval(()).unwrap_err();
             (fatal_in(&e), e.to_string())
         };
-        let (fatal, msg) = marked("log.fatal('gone')");
+        let (fatal, msg) = marked("_.log.fatal('gone')");
         assert!(fatal && msg.contains("gone"), "{msg}");
-        assert!(!marked("log.error('gone')").0);
-        assert!(!marked("fail('gone')").0);
+        assert!(!marked("_.log.error('gone')").0);
+        assert!(!marked("_.fail('gone')").0);
     }
 
     #[test]
     fn an_unknown_method_lists_the_five() {
         for m in ["critical", "trace"] {
-            let err = eval_in(ctx_with(&[], None), &format!("log.{m}('x')")).unwrap_err();
+            let err = eval_in(ctx_with(&[], None), &format!("_.log.{m}('x')")).unwrap_err();
             assert!(err.contains(METHODS), "{err}");
         }
     }
@@ -233,10 +233,10 @@ mod tests {
         let lines = run(
             Some("t.dedupe"),
             &[
-                "log.warn('a')",
-                "log.warn('a')",
-                "log.warn('a')",
-                "log.warn('b')",
+                "_.log.warn('a')",
+                "_.log.warn('a')",
+                "_.log.warn('a')",
+                "_.log.warn('b')",
             ],
         );
         assert_eq!(lines.len(), 3, "{lines:?}");
@@ -256,6 +256,6 @@ mod tests {
 
     #[test]
     fn no_origin_is_not_deduplicated() {
-        assert_eq!(run(None, &["log.warn('z')", "log.warn('z')"]).len(), 2);
+        assert_eq!(run(None, &["_.log.warn('z')", "_.log.warn('z')"]).len(), 2);
     }
 }

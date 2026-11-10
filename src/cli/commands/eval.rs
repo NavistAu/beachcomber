@@ -7,7 +7,7 @@
 //!
 //! `eval` is a client of [`libbeachcomber::resolve`], exactly as `comb get`
 //! is: every ref inside the template resolves through the one resolver, with
-//! this process's environment and directory and `exec()` enabled, so
+//! this process's environment and directory and `_.exec()` enabled, so
 //! `comb eval '{{ p.f }}'` and `comb get p.f` agree by construction. `comb`
 //! always requires the daemon (design §2) — there is no daemon-skip path.
 //!
@@ -22,7 +22,7 @@ use libbeachcomber::resolve::{Slot, eval};
 
 /// `path` is what `main.rs` already settled: `None` for `--global`, otherwise
 /// `--path`, the trailing positional, or the current directory. A render's
-/// `exec()`, `lup()` and `read` run in the directory it addresses, `$HOME` for
+/// `_.exec()`, `_.lup()` and `read` run in the directory it addresses, `$HOME` for
 /// the global entry — the resolver's rule, the same for every surface.
 pub fn run_eval(config: &Config, template: &str, path: Option<&str>, format: Format) -> Outcome {
     // `comb` always requires the daemon (design §2, outcome 22).

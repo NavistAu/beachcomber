@@ -451,7 +451,7 @@ async fn a_refresh_during_a_reads_run_queues_one_rerun() {
 fn gated_source(dir: &std::path::Path, poll: &str) -> String {
     format!(
         "[daemon.providers.demo.sources.s]\n\
-         data = \"{{{{ exec('touch {d}/started; while [ ! -f {d}/go ]; do sleep 0.01; done; echo 1') | trim }}}}\"\n\
+         data = \"{{{{ _.exec('touch {d}/started; while [ ! -f {d}/go ]; do sleep 0.01; done; echo 1') | trim }}}}\"\n\
          result.n = \"{{{{ data }}}}\"\n\
          return = \"{{{{ result | poll('{poll}') }}}}\"\n",
         d = dir.display()
@@ -538,7 +538,7 @@ async fn a_ring_of_reads_between_runs_finds_the_last_value_and_waits_on_nothing(
     let side = |provider: &str, source: &str, other: &str| {
         format!(
             "[daemon.providers.{provider}.sources.{source}]\n\
-             data = \"{{{{ exec('touch {d}/{source}; while [ ! -f {d}/go ]; do sleep 0.01; done') ~ \
+             data = \"{{{{ _.exec('touch {d}/{source}; while [ ! -f {d}/go ]; do sleep 0.01; done') ~ \
              '{source}<' ~ (comb['{other}' ~ ''].v if comb['{other}' ~ ''] else '-') ~ '>' }}}}\"\n\
              result.v = \"{{{{ data }}}}\"\n\
              return = \"{{{{ result | timeout('3s') }}}}\"\n",

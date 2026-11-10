@@ -49,7 +49,7 @@ console.log(branch); // e.g. "main"
 const client = new Client();
 const client = new Client({ socketPath: '/custom/path' });
 const client = new Client({ socketPath: '/custom/path', timeoutMs: 2000, connectTimeoutMs: 0 });
-const client = new Client({ exec: true }); // templates this client renders may call exec()
+const client = new Client({ exec: true }); // templates this client renders may call _.exec()
 ```
 
 Each option is passed to the library's `bc_client_new` as it is given; the
@@ -62,7 +62,7 @@ default.
 | `timeoutMs` | 250 | How long one read or write on the socket may take. 0 is refused. |
 | `connectTimeoutMs` | 1500 | How long connecting keeps retrying a socket nobody answers yet; 0 is a single attempt. |
 | `autostart` | on | Start a daemon when none serves the auto-discovered socket. |
-| `exec` | off | Whether a template this client renders may call `exec()`; a template that calls it without the option fails with `exec() is disabled in this context`. |
+| `exec` | off | Whether a template this client renders may call `_.exec()`; a template that calls it without the option fails with `exec() is disabled in this context`. |
 
 Over the subprocess transport `timeoutMs` bounds each spawned `comb`, and
 `connectTimeoutMs` is refused with `UnsupportedError`: `comb` has
@@ -245,7 +245,7 @@ prints, the same value the FFI tier answers — the directory chain up to
 refusals. A wait `comb` cannot read is the same `ParseError`, in the same
 words, as over FFI. The spawned `comb` renders as the FFI tier does. A call's `env`
 map is its whole environment (with no map, this process's), so `env.*` and an
-`exec()` child see exactly the map. `--socket` carries `socketPath`, else
+`_.exec()` child see exactly the map. `--socket` carries `socketPath`, else
 `$BEACHCOMBER_SOCKET`, so the map cannot point the tier at another daemon.
 `--color never` goes when the render's environment sets a non-empty
 `NO_COLOR`, else `--color always`, so the colour filters draw the same bytes

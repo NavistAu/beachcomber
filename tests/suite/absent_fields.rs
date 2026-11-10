@@ -19,7 +19,7 @@ fn counting_daemon() -> (TestDaemon, std::path::PathBuf) {
         format!(
             r#"
 [daemon.providers.s.sources.main]
-data = "{{{{ exec(['sh', '-c', 'echo run >> {runs}; echo 1']) }}}}"
+data = "{{{{ _.exec(['sh', '-c', 'echo run >> {runs}; echo 1']) }}}}"
 result.present = "{{{{ data }}}}"
 result.never = "{{{{ none }}}}"
 "#,

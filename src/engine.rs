@@ -4,7 +4,7 @@
 //! functions only the daemon has. They live here, not in libbeachcomber, so
 //! `ureq` and `libloading` stay out of every SDK's native library; a client
 //! template calling either is refused by libbeachcomber's engine environment
-//! (`url() runs only in a Source's lines`).
+//! (`_.url() runs only in a Source's lines`).
 
 use crate::boundaries::http;
 use crate::boundaries::library::{LibraryLoader, LoadedLibrary};
@@ -85,7 +85,7 @@ impl PluginSet {
     /// `name` containing `/` is the library path, which must be absolute;
     /// otherwise `lib<name>.<dylib|so>` is searched for on the search path, in
     /// order, the first directory holding it winning. Errors are complete
-    /// `plugin(): ...` messages.
+    /// `_.plugin(): ...` messages.
     pub fn call(
         &self,
         name: &str,
@@ -171,8 +171,8 @@ const LIBRARY_EXT: &str = if cfg!(target_os = "macos") {
 };
 
 /// libbeachcomber's engine environment plus the daemon-only functions:
-/// `url(address, method='GET', headers={}, body=none, timeout='10s')` and
-/// `plugin(name, symbol, args...)`.
+/// `_.url(address, method='GET', headers={}, body=none, timeout='10s')` and
+/// `_.plugin(name, symbol, args...)`.
 ///
 /// Both block: `url` until the response or `timeout`, `plugin` for as long
 /// as the library takes. A render through this environment must run on a
@@ -201,6 +201,7 @@ pub fn daemon_engine_env(plugins: Arc<PluginSet>) -> Environment<'static> {
             Ok(MjValue::from(Serde(result)))
         },
     );
+    libbeachcomber::library::gather(&mut jinja);
     jinja
 }
 
@@ -233,6 +234,7 @@ pub fn provider_engine_env() -> Environment<'static> {
             merge_values(operands.iter().cloned())
         },
     );
+    libbeachcomber::library::gather(&mut jinja);
     jinja
 }
 
@@ -506,7 +508,7 @@ fn redacted(address: &str) -> String {
     format!("{scheme}{host}{path}")
 }
 
-/// `url(address, method='GET', headers={}, body=none, timeout='10s')`: the
+/// `_.url(address, method='GET', headers={}, body=none, timeout='10s')`: the
 /// response body as text. `method` is GET, POST, PUT or PATCH; `body` (a
 /// string) needs a method other than GET. A non-2xx status is an error naming
 /// it.
@@ -643,29 +645,32 @@ mod tests {
             .with_status(200)
             .with_body(r#"{"a":1}"#)
             .create();
-        let t = format!("{{{{ (url('{}/v') | fromjson).a }}}}", server.url());
+        let t = format!("{{{{ (_.url('{}/v') | fromjson).a }}}}", server.url());
         assert_eq!(render(no_plugins(), &t).unwrap(), "1");
     }
 
-    /// `timeout=` is a duration, as `exec()`'s is; the millisecond keyword
+    /// `timeout=` is a duration, as `_.exec()`'s is; the millisecond keyword
     /// says what took its place.
     #[test]
     fn url_timeout_is_a_duration() {
         let mut server = mockito::Server::new();
         let _m = server.mock("GET", "/v").with_body("ok").create();
         for timeout in ["'2s'", "2", "'1500ms'"] {
-            let t = format!("{{{{ url('{}/v', timeout={timeout}) }}}}", server.url());
+            let t = format!("{{{{ _.url('{}/v', timeout={timeout}) }}}}", server.url());
             assert_eq!(render(no_plugins(), &t).unwrap(), "ok", "{timeout}");
         }
         let err = url_error(&format!(
-            "{{{{ url('{}/v', timeout_ms=100) }}}}",
+            "{{{{ _.url('{}/v', timeout_ms=100) }}}}",
             server.url()
         ));
         assert!(
             err.contains("url(): timeout_ms= is removed: write timeout='10s'"),
             "{err}"
         );
-        let err = url_error(&format!("{{{{ url('{}/v', timeout='x') }}}}", server.url()));
+        let err = url_error(&format!(
+            "{{{{ _.url('{}/v', timeout='x') }}}}",
+            server.url()
+        ));
         assert!(err.contains("url(): timeout: "), "{err}");
     }
 
@@ -673,7 +678,7 @@ mod tests {
     fn url_non_2xx_is_an_error() {
         let mut server = mockito::Server::new();
         let _m = server.mock("GET", "/gone").with_status(503).create();
-        let err = url_error(&format!("{{{{ url('{}/gone') }}}}", server.url()));
+        let err = url_error(&format!("{{{{ _.url('{}/gone') }}}}", server.url()));
         assert!(err.contains("url():"), "{err}");
         assert!(err.contains("status 503"), "{err}");
     }
@@ -683,9 +688,9 @@ mod tests {
         let mut server = mockito::Server::new();
         let _m = server.mock("GET", "/nf").with_status(404).create();
         let _n = server.mock("GET", "/nm").with_status(304).create();
-        let err = url_error(&format!("{{{{ url('{}/nf') }}}}", server.url()));
+        let err = url_error(&format!("{{{{ _.url('{}/nf') }}}}", server.url()));
         assert!(err.contains("status 404"), "{err}");
-        let err = url_error(&format!("{{{{ url('{}/nm') }}}}", server.url()));
+        let err = url_error(&format!("{{{{ _.url('{}/nm') }}}}", server.url()));
         assert!(err.contains("status 304"), "{err}");
     }
 
@@ -698,7 +703,7 @@ mod tests {
             .with_status(500)
             .create();
         let err = url_error(&format!(
-            "{{{{ url('{}/k?api_key=hunter2#frag') }}}}",
+            "{{{{ _.url('{}/k?api_key=hunter2#frag') }}}}",
             server.url()
         ));
         assert!(err.contains("/k:"), "{err}");
@@ -719,7 +724,7 @@ mod tests {
             .with_body("ok")
             .create();
         let t = format!(
-            "{{{{ url('{}/p', method='POST', headers={{'x-token': 'abc'}}, body='payload') }}}}",
+            "{{{{ _.url('{}/p', method='POST', headers={{'x-token': 'abc'}}, body='payload') }}}}",
             server.url()
         );
         assert_eq!(render(no_plugins(), &t).unwrap(), "ok");
@@ -728,12 +733,12 @@ mod tests {
 
     #[test]
     fn url_unsupported_method_is_an_error() {
-        let err = url_error("{{ url('http://x/', method='DELETE') }}");
+        let err = url_error("{{ _.url('http://x/', method='DELETE') }}");
         assert!(
             err.contains("url(): method= must be one of GET, POST, PUT, PATCH, got DELETE"),
             "{err}"
         );
-        let err = url_error("{{ url('http://x/', method=1) }}");
+        let err = url_error("{{ _.url('http://x/', method=1) }}");
         assert!(
             err.contains("must be one of GET, POST, PUT, PATCH"),
             "{err}"
@@ -742,7 +747,7 @@ mod tests {
 
     #[test]
     fn url_body_with_get_is_an_error() {
-        let err = url_error("{{ url('http://x/', body='b') }}");
+        let err = url_error("{{ _.url('http://x/', body='b') }}");
         assert!(
             err.contains("url(): body= needs method POST, PUT or PATCH"),
             "{err}"
@@ -751,9 +756,9 @@ mod tests {
 
     #[test]
     fn url_headers_must_be_a_map_of_strings() {
-        let err = url_error("{{ url('http://x/', headers='a') }}");
+        let err = url_error("{{ _.url('http://x/', headers='a') }}");
         assert!(err.contains("url(): headers= must be a map"), "{err}");
-        let err = url_error("{{ url('http://x/', headers={'a': 1}) }}");
+        let err = url_error("{{ _.url('http://x/', headers={'a': 1}) }}");
         assert!(
             err.contains("url(): header a must have a string value"),
             "{err}"
@@ -762,7 +767,7 @@ mod tests {
 
     #[test]
     fn url_address_must_be_a_string() {
-        let err = url_error("{{ url(data.missing) }}");
+        let err = url_error("{{ _.url(data.missing) }}");
         assert!(err.contains("url(): the address must be a string"), "{err}");
     }
 
@@ -771,7 +776,7 @@ mod tests {
         // Connections complete in the listen backlog; nothing ever answers.
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let t = format!(
-            "{{{{ url('http://{}/', timeout='50ms') }}}}",
+            "{{{{ _.url('http://{}/', timeout='50ms') }}}}",
             listener.local_addr().unwrap()
         );
         let err = url_error(&t);
@@ -782,7 +787,7 @@ mod tests {
     #[test]
     fn url_errors_do_not_carry_userinfo() {
         // Nothing listens on port 1: the failure message must not echo the token.
-        let err = url_error("{{ url('http://user:tok3n@127.0.0.1:1/p?k=s3cret') }}");
+        let err = url_error("{{ _.url('http://user:tok3n@127.0.0.1:1/p?k=s3cret') }}");
         assert!(err.contains("url(): http://127.0.0.1:1/p:"), "{err}");
         assert!(!err.contains("tok3n") && !err.contains("s3cret"), "{err}");
     }
@@ -797,7 +802,7 @@ mod tests {
             "ftp://host/p?k=s3cret",
             "http://bad host/p?k=s3cret",
         ] {
-            let err = url_error(&format!("{{{{ url('{address}') }}}}"));
+            let err = url_error(&format!("{{{{ _.url('{address}') }}}}"));
             assert!(
                 err.contains("not an absolute http or https URL"),
                 "{address}: {err}"
@@ -817,7 +822,10 @@ mod tests {
             vec![first.path().to_path_buf(), second.path().to_path_buf()],
             Arc::new(loader),
         );
-        assert_eq!(render(plugins, "{{ plugin('foo', 'bc_x') }}").unwrap(), "7");
+        assert_eq!(
+            render(plugins, "{{ _.plugin('foo', 'bc_x') }}").unwrap(),
+            "7"
+        );
     }
 
     /// A loader that yields libraries whose `bc_x` answers `1`, each reporting
@@ -900,7 +908,7 @@ mod tests {
             Arc::new(counting_loader(1, loads.clone())),
         );
         let path = file.to_string_lossy().into_owned();
-        let t = format!("{{{{ plugin('x', 'bc_x') }}}}{{{{ plugin('{path}', 'bc_x') }}}}");
+        let t = format!("{{{{ _.plugin('x', 'bc_x') }}}}{{{{ _.plugin('{path}', 'bc_x') }}}}");
         assert_eq!(
             render_with(EngineCtx::default(), plugins, &t).unwrap(),
             "11"
@@ -973,7 +981,7 @@ mod tests {
             plugins.shadowed(),
             [("git", shadow_git), ("sys", shadow_sys)]
         );
-        let out = render(plugins, "{{ plugin('sys', 'loadavg') | length }}").unwrap();
+        let out = render(plugins, "{{ _.plugin('sys', 'loadavg') | length }}").unwrap();
         assert_eq!(out, "3");
         let elsewhere = tempfile::tempdir().unwrap();
         let out = render(
@@ -982,7 +990,7 @@ mod tests {
                 Arc::new(MockLibraryLoader::new()),
             ),
             &format!(
-                "{{{{ plugin('git', 'status', '{}') | length }}}}",
+                "{{{{ _.plugin('git', 'status', '{}') | length }}}}",
                 elsewhere.path().display()
             ),
         )
@@ -993,13 +1001,13 @@ mod tests {
 
     #[test]
     fn an_unknown_sys_symbol_is_symbol_not_found() {
-        let err = render(no_plugins(), "{{ plugin('sys', 'nope') }}").unwrap_err();
+        let err = render(no_plugins(), "{{ _.plugin('sys', 'nope') }}").unwrap_err();
         assert!(
             err.to_string()
                 .contains("plugin(): nope in sys: symbol not found"),
             "{err}"
         );
-        let err = render(no_plugins(), "{{ plugin('git', 'nope', '/') }}").unwrap_err();
+        let err = render(no_plugins(), "{{ _.plugin('git', 'nope', '/') }}").unwrap_err();
         assert!(
             err.to_string()
                 .contains("plugin(): nope in git: symbol not found"),
@@ -1014,7 +1022,7 @@ mod tests {
         let (first, second) = (no_plugins(), no_plugins());
         second.adopt_loaded(&first);
         assert_eq!(
-            render(second, "{{ plugin('sys', 'uname').sysname is string }}").unwrap(),
+            render(second, "{{ _.plugin('sys', 'uname').sysname is string }}").unwrap(),
             "True"
         );
     }
@@ -1032,7 +1040,10 @@ mod tests {
             vec![first.path().to_path_buf(), second.path().to_path_buf()],
             Arc::new(loader),
         );
-        assert_eq!(render(plugins, "{{ plugin('dup', 'bc_x') }}").unwrap(), "1");
+        assert_eq!(
+            render(plugins, "{{ _.plugin('dup', 'bc_x') }}").unwrap(),
+            "1"
+        );
     }
 
     #[test]
@@ -1040,14 +1051,14 @@ mod tests {
         let loader = loader_for("/opt/odd/libbar.so", "bc_x", |_| Ok("\"hi\"".into()));
         let plugins = PluginSet::new(vec![], Arc::new(loader));
         assert_eq!(
-            render(plugins, "{{ plugin('/opt/odd/libbar.so', 'bc_x') }}").unwrap(),
+            render(plugins, "{{ _.plugin('/opt/odd/libbar.so', 'bc_x') }}").unwrap(),
             "hi"
         );
     }
 
     #[test]
     fn plugin_relative_path_is_the_absolute_path_error() {
-        let err = render(no_plugins(), "{{ plugin('rel/libx.so', 'bc_x') }}")
+        let err = render(no_plugins(), "{{ _.plugin('rel/libx.so', 'bc_x') }}")
             .unwrap_err()
             .to_string();
         assert!(
@@ -1065,7 +1076,7 @@ mod tests {
         };
         let plugins = PluginSet::new(vec![], Arc::new(loader));
         assert_eq!(
-            render_with(ctx, plugins, "{{ plugin('~/p/libx.so', 'bc_x') }}").unwrap(),
+            render_with(ctx, plugins, "{{ _.plugin('~/p/libx.so', 'bc_x') }}").unwrap(),
             "3"
         );
     }
@@ -1074,7 +1085,7 @@ mod tests {
     fn plugin_called_twice_loads_the_library_once() {
         let loader = loader_for("/p/libtwice.so", "bc_x", |_| Ok("1".into()));
         let plugins = PluginSet::new(vec![], Arc::new(loader));
-        let t = "{{ plugin('/p/libtwice.so', 'bc_x') }}{{ plugin('/p/libtwice.so', 'bc_x') }}";
+        let t = "{{ _.plugin('/p/libtwice.so', 'bc_x') }}{{ _.plugin('/p/libtwice.so', 'bc_x') }}";
         assert_eq!(render(plugins, t).unwrap(), "11");
     }
 
@@ -1085,7 +1096,7 @@ mod tests {
             vec![dir.path().to_path_buf()],
             Arc::new(MockLibraryLoader::new()),
         );
-        let err = render(plugins, "{{ plugin('nope', 'bc_x') }}").unwrap_err();
+        let err = render(plugins, "{{ _.plugin('nope', 'bc_x') }}").unwrap_err();
         let want = format!(
             "plugin(): libnope.{EXT} not found on [daemon.plugin] path ({})",
             dir.path().display()
@@ -1095,7 +1106,7 @@ mod tests {
 
     #[test]
     fn plugin_needs_a_name_and_a_symbol() {
-        let err = render(no_plugins(), "{{ plugin('/p/libx.so') }}").unwrap_err();
+        let err = render(no_plugins(), "{{ _.plugin('/p/libx.so') }}").unwrap_err();
         assert!(
             err.to_string()
                 .contains("plugin(): needs a library name and a symbol"),
@@ -1111,7 +1122,7 @@ mod tests {
         let plugins = PluginSet::new(vec![], Arc::new(loader));
         let out = render(
             plugins,
-            "{% set r = plugin('/p/libecho.so', 'bc_echo_args', 1, 'a') %}{{ r | length }}:{{ r[0] }}:{{ r[1] }}",
+            "{% set r = _.plugin('/p/libecho.so', 'bc_echo_args', 1, 'a') %}{{ r | length }}:{{ r[0] }}:{{ r[1] }}",
         )
         .unwrap();
         assert_eq!(out, "2:1:a");
@@ -1121,7 +1132,7 @@ mod tests {
     fn plugin_failure_names_symbol_library_and_reason() {
         let loader = loader_for("/p/libnull.so", "bc_x", |_| Err("returned NULL".into()));
         let plugins = PluginSet::new(vec![], Arc::new(loader));
-        let err = render(plugins, "{{ plugin('/p/libnull.so', 'bc_x') }}").unwrap_err();
+        let err = render(plugins, "{{ _.plugin('/p/libnull.so', 'bc_x') }}").unwrap_err();
         assert!(
             err.to_string()
                 .contains("plugin(): bc_x in /p/libnull.so: returned NULL"),
@@ -1133,7 +1144,7 @@ mod tests {
     fn plugin_invalid_json_is_an_error() {
         let loader = loader_for("/p/libbad.so", "bc_x", |_| Ok("{nope".into()));
         let plugins = PluginSet::new(vec![], Arc::new(loader));
-        let err = render(plugins, "{{ plugin('/p/libbad.so', 'bc_x') }}").unwrap_err();
+        let err = render(plugins, "{{ _.plugin('/p/libbad.so', 'bc_x') }}").unwrap_err();
         assert!(err.to_string().contains("returned invalid JSON"), "{err}");
     }
 }

@@ -8,11 +8,11 @@ template.venv_name = "{{ comb.python.local_venv_name or (env.VIRTUAL_ENV | basen
 # A Python project: the nearest directory, walking up to `/`, with a `pyproject.toml` or a virtualenv
 # (`.venv`, `venv`, `.virtualenv` or `env` holding a `pyvenv.cfg`). Each candidate is an ancestor of
 # the directory read, so the longest is the nearest.
-root = '''{{ [lup('pyproject.toml', root=true) | dirname,
-  lup('.venv/pyvenv.cfg', root=true) | dirname | dirname,
-  lup('venv/pyvenv.cfg', root=true) | dirname | dirname,
-  lup('.virtualenv/pyvenv.cfg', root=true) | dirname | dirname,
-  lup('env/pyvenv.cfg', root=true) | dirname | dirname] | select | max }}'''
+root = '''{{ [_.lup('pyproject.toml', root=true) | dirname,
+  _.lup('.venv/pyvenv.cfg', root=true) | dirname | dirname,
+  _.lup('venv/pyvenv.cfg', root=true) | dirname | dirname,
+  _.lup('.virtualenv/pyvenv.cfg', root=true) | dirname | dirname,
+  _.lup('env/pyvenv.cfg', root=true) | dirname | dirname] | select | max }}'''
 # The project's virtualenv: the first of the four names, in that order, holding a `pyvenv.cfg`, and the file's text.
 data = '''{% set found = namespace(venv=none) %}
 {% for name in ['.venv', 'venv', '.virtualenv', 'env'] %}

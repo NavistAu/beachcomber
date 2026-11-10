@@ -53,7 +53,7 @@ the ffi tier reports `parse_error`.
 
 The spawned `comb` renders as the ffi tier does. A call's `opts.env` is its
 whole environment (the command runs as `env -i K=V …`, with the absolute path
-to `comb`; with no `env` it is this process's), so `env.*` and an `exec()`
+to `comb`; with no `env` it is this process's), so `env.*` and an `_.exec()`
 child see exactly the map. `--socket` carries `socket_path`, else
 `$BEACHCOMBER_SOCKET`, so the map cannot point the tier at another daemon.
 `--color never` goes when the render's environment sets a non-empty
@@ -137,7 +137,7 @@ local client = comb.connect({
   timeout_ms  = 2000,                                -- ffi transport
   connect_timeout_ms = 0,                            -- ffi transport
   autostart   = true,                                -- ffi transport
-  exec        = true,                                -- templates may call exec()
+  exec        = true,                                -- templates may call _.exec()
   library_path = '/opt/beachcomber/lib/libbeachcomber.dylib', -- ffi: as $BEACHCOMBER_LIB, the only candidate
   comb_bin     = '/opt/beachcomber/bin/comb',                 -- subprocess: override discovery
 })
@@ -153,7 +153,7 @@ library's default.
 | `timeout_ms` | 250 | How long one read or write on the socket may take. 0 is refused. |
 | `connect_timeout_ms` | 1500 | How long connecting keeps retrying a socket nobody answers yet; 0 is a single attempt. |
 | `autostart` | on | Start a daemon when none serves the auto-discovered socket. |
-| `exec` | off | Whether a template this client renders may call `exec()`; a template that calls it without the option fails with `exec() is disabled in this context`. |
+| `exec` | off | Whether a template this client renders may call `_.exec()`; a template that calls it without the option fails with `exec() is disabled in this context`. |
 
 The subprocess transport cannot bound a spawned `comb` (`io.popen` has no
 timeout, and `comb` no connect-budget flag), so `comb.connect` refuses

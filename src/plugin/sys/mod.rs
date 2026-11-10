@@ -2,7 +2,7 @@
 //!
 //! Each symbol is a plugin symbol like any library's, `extern "C"
 //! fn(*const c_char) -> *const c_char` (the contract at
-//! [`crate::engine::PluginSet`]), reached by `plugin('sys', '<symbol>')`
+//! [`crate::engine::PluginSet`]), reached by `_.plugin('sys', '<symbol>')`
 //! through [`super::StaticLibrary`] and the one call path every plugin has
 //! ([`crate::boundaries::library::call_symbol`]). Only how the function is
 //! found differs: this table, not `dlsym`.
@@ -295,13 +295,16 @@ mod tests {
     use serde_json::json;
     use std::sync::Arc;
 
-    /// `plugin('sys', symbol)` through the daemon's engine, as a Source's
+    /// `_.plugin('sys', symbol)` through the daemon's engine, as a Source's
     /// `data` line calls it, as JSON.
     fn call(symbol: &str) -> Json {
         let plugins = PluginSet::new(vec![], Arc::new(MockLibraryLoader::new()));
         let env = daemon_engine_env(Arc::new(plugins));
         let out = env
-            .render_str(&format!("{{{{ plugin('sys', '{symbol}') | tojson }}}}"), ())
+            .render_str(
+                &format!("{{{{ _.plugin('sys', '{symbol}') | tojson }}}}"),
+                (),
+            )
             .unwrap_or_else(|e| panic!("{symbol}: {e:#}"));
         serde_json::from_str(&out).unwrap()
     }
@@ -452,7 +455,7 @@ mod tests {
         let plugins = PluginSet::new(vec![], Arc::new(MockLibraryLoader::new()));
         let env = daemon_engine_env(Arc::new(plugins));
         let err = env
-            .render_str("{{ plugin('sys', 'hostname', 1) }}", ())
+            .render_str("{{ _.plugin('sys', 'hostname', 1) }}", ())
             .unwrap_err()
             .to_string();
         assert!(

@@ -3,7 +3,7 @@
 //! `hyperlink`.
 //!
 //! All are pure string transforms (no filesystem, network or process access),
-//! so unlike `exec()` they need no `allow_exec` gating and are on every
+//! so unlike `_.exec()` they need no `allow_exec` gating and are on every
 //! surface. A colour is a name, a palette index or `#rrggbb` ([`crate::term`]),
 //! drawn at the depth the render's `env` says its terminal has. With
 //! `NO_COLOR` set to something there ([`EngineCtx::colour`]) no item emits an
@@ -127,7 +127,7 @@ pub(super) fn attribute(text: String, code: u8, on: bool) -> String {
     sgr(&code.to_string(), &text)
 }
 
-/// `hyperlink(url, text)`: `text` as an OSC 8 link to `url`. Absent text is
+/// `_.hyperlink(url, text)`: `text` as an OSC 8 link to `url`. Absent text is
 /// undefined, an absent or empty `url` leaves the text unlinked, and a `url`
 /// that is not a string, or holds a control character, is an error.
 fn hyperlink(url: &MjValue, label: &MjValue, on: bool) -> Result<MjValue, Error> {
@@ -329,11 +329,11 @@ mod tests {
     #[test]
     fn hyperlink_wraps_text_in_osc_8() {
         assert_eq!(
-            eval(&[], "hyperlink('https://x.test/1', '#1')").unwrap(),
+            eval(&[], "_.hyperlink('https://x.test/1', '#1')").unwrap(),
             "\x1b]8;;https://x.test/1\x1b\\#1\x1b]8;;\x1b\\"
         );
         assert_eq!(
-            eval(&[], "hyperlink('u', 7)").unwrap(),
+            eval(&[], "_.hyperlink('u', 7)").unwrap(),
             "\x1b]8;;u\x1b\\7\x1b]8;;\x1b\\"
         );
     }
@@ -342,31 +342,31 @@ mod tests {
     fn hyperlink_absent_text_is_undefined_and_absent_url_is_the_text() {
         for text in ["none", "missing"] {
             assert_eq!(
-                eval(&[], &format!("hyperlink('u', {text}) is undefined")).unwrap(),
+                eval(&[], &format!("_.hyperlink('u', {text}) is undefined")).unwrap(),
                 "True"
             );
         }
-        assert_eq!(eval(&[], "hyperlink(none, 'text')").unwrap(), "text");
-        assert_eq!(eval(&[], "hyperlink(missing, 'text')").unwrap(), "text");
-        assert_eq!(eval(&[], "hyperlink('u', '')").unwrap(), "");
+        assert_eq!(eval(&[], "_.hyperlink(none, 'text')").unwrap(), "text");
+        assert_eq!(eval(&[], "_.hyperlink(missing, 'text')").unwrap(), "text");
+        assert_eq!(eval(&[], "_.hyperlink('u', '')").unwrap(), "");
     }
 
     #[test]
     fn hyperlink_errors_and_colour_off() {
-        let err = eval(&[], "hyperlink(3, 'x')").unwrap_err();
+        let err = eval(&[], "_.hyperlink(3, 'x')").unwrap_err();
         assert!(
             err.contains("hyperlink(): the url must be a string"),
             "{err}"
         );
-        let err = eval(&[], "hyperlink('a\\u001b[0m', 'x')").unwrap_err();
+        let err = eval(&[], "_.hyperlink('a\\u001b[0m', 'x')").unwrap_err();
         assert!(
             err.contains("hyperlink(): the url holds a control character"),
             "{err}"
         );
         // A bad url is an error even with no text.
-        assert!(eval(&[], "hyperlink(3, none)").is_err());
+        assert!(eval(&[], "_.hyperlink(3, none)").is_err());
         assert_eq!(
-            eval(&[("NO_COLOR", "1")], "hyperlink('u', 'text')").unwrap(),
+            eval(&[("NO_COLOR", "1")], "_.hyperlink('u', 'text')").unwrap(),
             "text"
         );
     }

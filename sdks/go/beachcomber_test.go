@@ -672,7 +672,7 @@ func TestWithExec_ReachesTheOptionsJSON(t *testing.T) {
 
 func TestClient_Get_ExecIsDisabledWithoutTheOption(t *testing.T) {
 	c := requireClient(t)
-	if err := c.Put("execns:template", map[string]interface{}{"out": "{{ exec(['printf', 'x']) }}"}, "", "", false); err != nil {
+	if err := c.Put("execns:template", map[string]interface{}{"out": "{{ _.exec(['printf', 'x']) }}"}, "", "", false); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
 	_, err := c.Get("execns.out", "/", nil)
@@ -691,7 +691,7 @@ func TestClient_Get_ExecRunsWithTheOption(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
-	if err := c.Put("execns2:template", map[string]interface{}{"out": "{{ exec(['printf', 'x']) }}"}, "", "", false); err != nil {
+	if err := c.Put("execns2:template", map[string]interface{}{"out": "{{ _.exec(['printf', 'x']) }}"}, "", "", false); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
 	v, err := c.Get("execns2.out", "/", nil)

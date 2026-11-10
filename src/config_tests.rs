@@ -362,7 +362,7 @@ fn a_client_template_is_linted_where_it_is_loaded() {
 }
 
 /// A `root` line may call `exec`, `execa`, `url` or `plugin`, but every new directory
-/// read runs it, so the load warns and still loads; `lup()` does not warn.
+/// read runs it, so the load warns and still loads; `_.lup()` does not warn.
 #[test]
 fn a_root_line_that_calls_exec_warns_and_still_loads() {
     let source = |root: &str| {
@@ -376,24 +376,24 @@ fn a_root_line_that_calls_exec_warns_and_still_loads() {
         )]);
         ProviderRegistry::load(&config, &std::env::vars().collect())
     };
-    let load = source("{{ exec('git', 'rev-parse') }}");
+    let load = source("{{ _.exec('git', 'rev-parse') }}");
     assert!(load.errors.is_empty(), "{:#?}", load.errors);
     assert!(load.registry.is_registered("demo"));
     assert_eq!(
         load.warnings,
         vec![
-            "config(/user.toml): [daemon.providers.demo.sources.s] root: exec() runs for every \
-             new directory read; find the root with lup() instead"
+            "config(/user.toml): [daemon.providers.demo.sources.s] root: _.exec() runs for every \
+             new directory read; find the root with _.lup() instead"
         ]
     );
     let load = source("{{ 'git rev-parse' | execa() }}");
     assert_eq!(load.warnings.len(), 1, "{:#?}", load.warnings);
     assert!(
-        load.warnings[0].contains("root: execa() runs"),
+        load.warnings[0].contains("root: _.execa() runs"),
         "{:#?}",
         load.warnings
     );
-    let load = source("{{ lup('.git') | dirname }}");
+    let load = source("{{ _.lup('.git') | dirname }}");
     assert!(load.warnings.is_empty(), "{:#?}", load.warnings);
 }
 
@@ -1062,7 +1062,7 @@ fn the_default_result_forbids_two_sources_declaring_one_field() {
 #[test]
 fn an_explicit_merge_has_chosen_an_order_and_may_share_a_field() {
     let user = format!(
-        "[daemon.providers.demo]\nresult = \"{{{{ merge(sources.a(), sources.b()) }}}}\"\n{SHARED_FIELD}"
+        "[daemon.providers.demo]\nresult = \"{{{{ _.merge(sources.a(), sources.b()) }}}}\"\n{SHARED_FIELD}"
     );
     assert_eq!(source_errors(&user), Vec::<String>::new());
     let registry = shipped_registry(&user);
@@ -1074,7 +1074,7 @@ fn a_schedule_decorator_on_a_provider_line_is_a_load_error() {
     for (key, line) in [
         ("return", "{{ result | poll('5s') }}"),
         ("return", "{{ result | watch('/etc/hosts') }}"),
-        ("result", "{{ merge(sources) | ttl(5) }}"),
+        ("result", "{{ _.merge(sources) | ttl(5) }}"),
     ] {
         let user = format!("[daemon.providers.demo]\n{key} = \"{line}\"\n");
         let errors = source_errors(&user);

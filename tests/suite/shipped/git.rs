@@ -1284,7 +1284,7 @@ fn a_source_reading_git_hears_its_tree_first() {
     let Some(f) = first_read_watching_with(
         r#"
 [daemon.providers.dep.sources.s]
-root = "{{ lup('.git', root=true) | dirname }}"
+root = "{{ _.lup('.git', root=true) | dirname }}"
 data = "{{ comb.git.untracked }}"
 result.n = "{{ data }}"
 return = "{{ result | nearest }}"
@@ -1570,8 +1570,8 @@ fn a_source_over_lup_does_not_run_for_entries_coming_and_going() {
     let s = served(
         &[],
         "[daemon.providers.m.sources.s]\n\
-         root = \"{{ lup('.marker') | dirname }}\"\n\
-         data = \"{{ lup('.marker') }}\"\n\
+         root = \"{{ _.lup('.marker') | dirname }}\"\n\
+         data = \"{{ _.lup('.marker') }}\"\n\
          result.found = \"{{ data }}\"\n\
          return = \"{{ result | poll('10m') }}\"\n",
     );

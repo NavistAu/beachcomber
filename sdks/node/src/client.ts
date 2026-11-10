@@ -215,7 +215,7 @@ export interface ClientOptions {
   autostart?: boolean;
   /**
    * Whether a template this client renders (`get`, `eval`) may call
-   * `exec()`. Unset, the library's default (off) — a template that calls it
+   * `_.exec()`. Unset, the library's default (off) — a template that calls it
    * then fails with `exec() is disabled in this context`.
    */
   exec?: boolean;

@@ -89,7 +89,7 @@ A client template imports a library by its address, written as a string:
   `<p>:template`, `comb eval`, `-f`, a `comb status` row, and an SDK's `get` and `eval`.
 - A library is something a value depends on: `comb watch` follows it, so editing the library re-renders the watch.
   It is text, like a template, so its age is not the value's.
-- `exec()` in a macro runs only where the importing render may run it.
+- `_.exec()` in a macro runs only where the importing render may run it.
 
 What fails:
 

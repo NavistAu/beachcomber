@@ -229,18 +229,24 @@ fn a_change_is_judged_against_the_configuration_the_daemon_loaded() {
 fn the_watch_re_arms_and_reports_every_change() {
     let tmp = tempfile::tempdir().unwrap();
     let cfg = tmp.path().join("config.toml");
-    std::fs::write(&cfg, "[daemon]\n").unwrap();
+    std::fs::write(&cfg, "schema.version = 2\n[daemon]\n").unwrap();
 
     let (_watch, rx) = watch(cfg.clone(), POLL_MS);
 
-    write_ahead(&cfg, "[daemon]\nlog_level = \"debug\"\n");
+    write_ahead(
+        &cfg,
+        "schema.version = 2\n[daemon]\nlog_level = \"debug\"\n",
+    );
     assert_eq!(
         rx.recv_timeout(Duration::from_secs(3)),
         Ok(ChangeKind::Settings),
         "first change"
     );
 
-    write_ahead(&cfg, "[daemon]\nlog_level = \"trace\"\n");
+    write_ahead(
+        &cfg,
+        "schema.version = 2\n[daemon]\nlog_level = \"trace\"\n",
+    );
     assert_eq!(
         rx.recv_timeout(Duration::from_secs(3)),
         Ok(ChangeKind::Settings),
@@ -252,15 +258,16 @@ fn the_watch_re_arms_and_reports_every_change() {
 fn an_edit_is_seen_behind_another_file_stamped_into_the_future() {
     // One "newest mtime" reference point cannot see past a file whose mtime is
     // far ahead — a network mount's clock skew, an editor, a test. Per-file
-    // mtimes can: only the file that actually moved compares unequal.
+    // mtimes can: only the file that actually moved compares unequal. Each is
+    // at the current schema, so loading it rewrites nothing.
     let tmp = tempfile::tempdir().unwrap();
     let cfg = tmp.path().join("config.toml");
-    std::fs::write(&cfg, "[daemon]\n").unwrap();
+    std::fs::write(&cfg, "schema.version = 2\n[daemon]\n").unwrap();
     let conf_d = tmp.path().join("conf.d");
     std::fs::create_dir(&conf_d).unwrap();
 
     let ahead = conf_d.join("01-ahead.toml");
-    std::fs::write(&ahead, "[daemon]\n").unwrap();
+    std::fs::write(&ahead, "schema.version = 2\n[daemon]\n").unwrap();
     std::fs::OpenOptions::new()
         .write(true)
         .open(&ahead)
@@ -269,11 +276,18 @@ fn an_edit_is_seen_behind_another_file_stamped_into_the_future() {
         .unwrap();
 
     let other = conf_d.join("02-other.toml");
-    std::fs::write(&other, "[daemon]\nlog_level = \"debug\"\n").unwrap();
+    std::fs::write(
+        &other,
+        "schema.version = 2\n[daemon]\nlog_level = \"debug\"\n",
+    )
+    .unwrap();
 
     let (_watch, rx) = watch(cfg.clone(), POLL_MS);
 
-    write_ahead(&other, "[daemon]\nlog_level = \"trace\"\n");
+    write_ahead(
+        &other,
+        "schema.version = 2\n[daemon]\nlog_level = \"trace\"\n",
+    );
 
     assert_eq!(
         rx.recv_timeout(Duration::from_secs(3)),
@@ -659,7 +673,7 @@ async fn a_reload_clears_kept_roots() {
     std::fs::create_dir_all(&proj).unwrap();
     let source = r#"
 [daemon.providers.demo.sources.s]
-root = "{{ exec('echo run >> ' ~ env.HOME ~ '/roots; echo ' ~ env.HOME ~ '/proj') | trim }}"
+root = "{{ _.exec('echo run >> ' ~ env.HOME ~ '/roots; echo ' ~ env.HOME ~ '/proj') | trim }}"
 data = "{{ 1 }}"
 result.n = "{{ data }}"
 "#;
@@ -721,7 +735,7 @@ fn home() -> PathBuf {
 fn gated(poll: &str) -> String {
     format!(
         "[daemon.providers.demo.sources.s]\n\
-         data = \"{{{{ exec('while [ ! -f $HOME/go ]; do sleep 0.01; done; cat $HOME/val') | trim }}}}\"\n\
+         data = \"{{{{ _.exec('while [ ! -f $HOME/go ]; do sleep 0.01; done; cat $HOME/val') | trim }}}}\"\n\
          result.n = \"{{{{ data }}}}\"\n\
          return = \"{{{{ result | poll('{poll}') }}}}\"\n"
     )
@@ -961,7 +975,7 @@ async fn an_edited_body_serves_the_new_value_at_once() {
 fn counted(ret: &str) -> String {
     format!(
         "[daemon.providers.demo.sources.s]\n\
-         data = \"{{{{ exec('echo run >> $HOME/runs; cat $HOME/val') | trim }}}}\"\n\
+         data = \"{{{{ _.exec('echo run >> $HOME/runs; cat $HOME/val') | trim }}}}\"\n\
          result.n = \"{{{{ data }}}}\"\nreturn = \"{{{{ result | {ret} }}}}\"\n"
     )
 }
@@ -1116,7 +1130,7 @@ async fn a_removed_providers_puts_stay_reachable() {
 
 /// [`gated`], but its body leaves `$HOME/started` once it has begun.
 fn started_gated() -> String {
-    gated("10m").replace("exec('while", "exec('touch $HOME/started; while")
+    gated("10m").replace("_.exec('while", "_.exec('touch $HOME/started; while")
 }
 
 fn constant(n: u32) -> String {
@@ -1205,7 +1219,7 @@ async fn a_fixed_body_is_not_held_back_by_the_failure_backoff_of_the_old_one() {
              return = \"{{{{ result | poll('10m') | failback('10m', 1) }}}}\"\n"
         )
     };
-    let mut live = Live::start("", &[("10-demo.toml", &body("exec('exit 1')"))]).await;
+    let mut live = Live::start("", &[("10-demo.toml", &body("_.exec('exit 1')"))]).await;
     // Two failures: into backoff, where a read no longer runs it.
     live.value("demo.n", None).await;
     live.value("demo.n", None).await;
@@ -1264,7 +1278,8 @@ async fn an_evicted_sources_overtaken_run_is_not_run_again() {
     std::fs::remove_file(home().join("go")).unwrap();
     send_recv(&mut live.s, json!({"op": "refresh", "key": "demo.n"})).await;
     live.until_in_flight(1).await;
-    let counted_body = gated("10m").replace("exec('while", "exec('echo run >> $HOME/runs; while");
+    let counted_body =
+        gated("10m").replace("_.exec('while", "_.exec('echo run >> $HOME/runs; while");
     rewrite(&live.env.drop_in("10-demo.toml"), &counted_body);
     // The edit's reload is in force once the registry's template is.
     rewrite(

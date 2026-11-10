@@ -1,4 +1,4 @@
-//! `bar(width, part, ..., empty=, fill_fg=, text_fg=, label_fg=, bold=)`: one
+//! `_.bar(width, part, ..., empty=, fill_fg=, text_fg=, label_fg=, bold=)`: one
 //! styled row of `width` terminal columns made of labels and tracks.
 //!
 //! A part is a **label** (a string, or `{'label': text, 'fg': colour, 'bg':
@@ -500,7 +500,7 @@ mod tests {
         Arc::new(ctx)
     }
 
-    /// `bar(width, parts..., <styles>)` over `parts`, at 24-bit colour.
+    /// `_.bar(width, parts..., <styles>)` over `parts`, at 24-bit colour.
     fn call(width: Value, parts: &[Value], styles: &str) -> Result<String, String> {
         call_with(&[("COLORTERM", "truecolor")], width, parts, styles)
     }
@@ -519,7 +519,7 @@ mod tests {
             names.push_str(&format!(", p{i}"));
         }
         let expr = format!(
-            "bar({names}{}{styles})",
+            "_.bar({names}{}{styles})",
             if styles.is_empty() { "" } else { ", " }
         );
         with_ctx(vars_ctx(vars), || {
@@ -895,14 +895,14 @@ mod tests {
         with_ctx(vars_ctx(&[("COLORTERM", "truecolor")]), || {
             let value = jinja
                 .compile_expression(
-                    "bar(4, {'value': 0.5, 'colour': 'red'}, **{'empty': 'blue', 'bold': true})",
+                    "_.bar(4, {'value': 0.5, 'colour': 'red'}, **{'empty': 'blue', 'bold': true})",
                 )
                 .unwrap()
                 .eval(())
                 .unwrap();
             let direct = jinja
                 .compile_expression(
-                    "bar(4, {'value': 0.5, 'colour': 'red'}, empty='blue', bold=true)",
+                    "_.bar(4, {'value': 0.5, 'colour': 'red'}, empty='blue', bold=true)",
                 )
                 .unwrap()
                 .eval(())
@@ -981,7 +981,7 @@ mod tests {
             assert!(err.contains("bar():"), "{width} {parts:?} {styles}: {err}");
         }
         let err = pure_engine_env()
-            .compile_expression("bar()")
+            .compile_expression("_.bar()")
             .unwrap()
             .eval(())
             .unwrap_err();
@@ -990,7 +990,7 @@ mod tests {
 
     /// The painter's rows, recorded from scanline's pre-phase-6 painter on
     /// one-tree (`tests/fixtures/scanline/README.md`): each row's segments
-    /// and the exact bytes it painted. The same segments as one `bar()` call
+    /// and the exact bytes it painted. The same segments as one `_.bar()` call
     /// paint the same bytes.
     #[test]
     fn every_recorded_painter_row_is_painted_byte_for_byte() {
@@ -1034,7 +1034,7 @@ mod tests {
         );
     }
 
-    /// One painter segment as the part `bar()` takes.
+    /// One painter segment as the part `_.bar()` takes.
     fn segment_as_part(seg: &Value) -> Value {
         if let Some(label) = seg.get("label") {
             return json!({ "label": label, "fg": seg["fg"], "bg": seg["bg"] });

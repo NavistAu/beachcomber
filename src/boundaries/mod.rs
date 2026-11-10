@@ -1,6 +1,6 @@
 //! Seams between the daemon and the operating system: git, the process
 //! table, sockets, plugin libraries and http. Most are traits a test
-//! mocks; `http` is one function (`url()` calls it), since a test serves a
+//! mocks; `http` is one function (`_.url()` calls it), since a test serves a
 //! real local response instead. Not every side effect goes through one: the
 //! shipped Sources read files directly.
 

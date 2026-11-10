@@ -70,7 +70,7 @@ dirty, err  := sess.Get("git.dirty", "", nil)
 ```go
 c, err := beachcomber.NewClient()                                       // auto-discover socket
 c, err := beachcomber.NewClient(beachcomber.WithSocketPath("/custom/path/sock")) // explicit socket path
-c, err := beachcomber.NewClient(beachcomber.WithExec(true))             // templates this client renders may call exec()
+c, err := beachcomber.NewClient(beachcomber.WithExec(true))             // templates this client renders may call _.exec()
 c, err := beachcomber.NewClient(beachcomber.WithTimeoutMs(500), beachcomber.WithConnectTimeoutMs(0))
 ```
 
@@ -82,11 +82,11 @@ Each option is passed to the library's `bc_client_new` as it is given; the SDK h
 | `WithTimeoutMs(ms uint64)` | 250 | How long one read or write on the socket may take. 0 is refused (`parse_error` on the first call). |
 | `WithConnectTimeoutMs(ms uint64)` | 1500 | How long connecting keeps retrying a socket nobody answers yet; 0 is a single attempt. |
 | `WithAutostart(enabled bool)` | on | Start a daemon when none serves the auto-discovered socket. |
-| `WithExec(enabled bool)` | off | Whether a template this client renders may call `exec()`. |
+| `WithExec(enabled bool)` | off | Whether a template this client renders may call `_.exec()`. |
 
 #### `c.Get(key, cwd string, env map[string]string, options ...GetOption) (any, error)`
 
-The value `comb get` prints for this key, cwd and env, as `encoding/json` decodes it (a `string`, `float64`, `bool`, `map[string]interface{}` or `[]interface{}`) — the daemon holds the templates, the client renders them; a plain field is its cached value, a templated one (`kubecontext.context`, `python.version`) is rendered, and a bare provider name is the whole merged namespace. A miss is `nil`. `cwd` is the directory the read addresses (`~` is home, a relative path is against this process's working directory); `""` is the global entry. `env` may be `nil`, which renders with the calling process's environment, as `comb` does. `options` are `beachcomber.Force` (re-execute every Source the read demands first, as `comb get --force`) and `beachcomber.Wait(d)` (how long to wait for a run the read needs before answering what is stored, as `comb get --wait`: a duration (`"0"`, `"50ms"`, `"2s"`) or `"forever"`; anything else is `ErrParse`). The unrendered halves are facets, read like any key: `p:template.x` is the template as stored, `p:put.x` and `p:source.x` those layers' values. `exec()` inside a template runs only on a client constructed with `beachcomber.WithExec(true)`; it is off by default, and a template that calls it then fails with `exec() is disabled in this context`.
+The value `comb get` prints for this key, cwd and env, as `encoding/json` decodes it (a `string`, `float64`, `bool`, `map[string]interface{}` or `[]interface{}`) — the daemon holds the templates, the client renders them; a plain field is its cached value, a templated one (`kubecontext.context`, `python.version`) is rendered, and a bare provider name is the whole merged namespace. A miss is `nil`. `cwd` is the directory the read addresses (`~` is home, a relative path is against this process's working directory); `""` is the global entry. `env` may be `nil`, which renders with the calling process's environment, as `comb` does. `options` are `beachcomber.Force` (re-execute every Source the read demands first, as `comb get --force`) and `beachcomber.Wait(d)` (how long to wait for a run the read needs before answering what is stored, as `comb get --wait`: a duration (`"0"`, `"50ms"`, `"2s"`) or `"forever"`; anything else is `ErrParse`). The unrendered halves are facets, read like any key: `p:template.x` is the template as stored, `p:put.x` and `p:source.x` those layers' values. `_.exec()` inside a template runs only on a client constructed with `beachcomber.WithExec(true)`; it is off by default, and a template that calls it then fails with `exec() is disabled in this context`.
 
 ```go
 v, err := c.Get("git.branch", "/path/to/repo", nil)
@@ -122,7 +122,7 @@ Subscribe to a key's value — what `Get` answers for it — and receive it agai
 
 #### `c.Eval(templateStr, cwd string, env map[string]string) (any, error)`
 
-`Eval` renders a template stored nowhere — the same value `comb eval` prints, decoded as `Get`'s is, `nil` when it renders nothing — so `Eval("{{ p.f }}", …)` and `Get("p.f", …)` agree. `cwd` and `env` mean what they mean for `Get`. `templateStr` accepts a single `{{ expr }}` tag (keeps the expression's natural type) or literal text/several tags (always a string — a source with no tags at all is its literal text). `exec()` inside a template runs only on a client constructed with `beachcomber.WithExec(true)`; it is off by default, and a template that calls it then fails with `exec() is disabled in this context`.
+`Eval` renders a template stored nowhere — the same value `comb eval` prints, decoded as `Get`'s is, `nil` when it renders nothing — so `Eval("{{ p.f }}", …)` and `Get("p.f", …)` agree. `cwd` and `env` mean what they mean for `Get`. `templateStr` accepts a single `{{ expr }}` tag (keeps the expression's natural type) or literal text/several tags (always a string — a source with no tags at all is its literal text). `_.exec()` inside a template runs only on a client constructed with `beachcomber.WithExec(true)`; it is off by default, and a template that calls it then fails with `exec() is disabled in this context`.
 
 #### `c.Session() (*Session, error)`
 

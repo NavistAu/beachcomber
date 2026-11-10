@@ -87,7 +87,7 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
     "a template that cannot resolve is the resolver's error, not a null hit",
     "a namespace read with one bad leaf is the resolver's error, not a null hit",
     "a template cycle is the resolver's error",
-    "a failed exec() is a server_error, never a transport kind",
+    "a failed _.exec() is a server_error, never a transport kind",
     "a group whose leaf fails reports the leaf's line",
     "refresh of a provider is ok, through comb refresh",
     "refresh of a static namespace is the daemon's refusal, in its words alone",
@@ -129,7 +129,7 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
   assert_true(c:put("bad:template", {
     bad = "{{ bad.bad }}",
     cyc = "{{ bad.cyc }}",
-    ex = '{{ exec("definitely-missing-cmd-4f2a") }}',
+    ex = '{{ _.exec("definitely-missing-cmd-4f2a") }}',
     grp = { leaf = "{{ bad.grp.leaf }}" },
   }, { path = "/tmp" }))
 
@@ -228,7 +228,7 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
   end)
 
   test(names[27], function()
-    assert_true(c:put("mapexec:template", { v = "{{ exec('echo \"$MARK\"') | trim }}" }, { path = "/tmp" }))
+    assert_true(c:put("mapexec:template", { v = "{{ _.exec('echo \"$MARK\"') | trim }}" }, { path = "/tmp" }))
     local execc = Client.new(require("beachcomber.subprocess_backend").new({
       comb_bin = guard.comb, socket_path = guard.socket, exec = true }))
     local value, err = execc:get("mapexec.v", { cwd = "/tmp", env = { MARK = "from-map", PATH = "/usr/bin:/bin" } })
@@ -238,7 +238,7 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
   end)
 
   test(names[28], function()
-    assert_true(c:put("noexec:template", { v = "{{ exec('echo hi') }}" }, { path = "/tmp" }))
+    assert_true(c:put("noexec:template", { v = "{{ _.exec('echo hi') }}" }, { path = "/tmp" }))
     local value, err = c:get("noexec.v", { cwd = "/tmp" })
     assert_nil(value)
     assert_eq(err.kind, "server_error")
@@ -264,7 +264,7 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
   end)
 
   test(names[31], function()
-    local value, err = c:eval("{{ exec('echo hi') }}", { cwd = "/tmp" })
+    local value, err = c:eval("{{ _.exec('echo hi') }}", { cwd = "/tmp" })
     assert_nil(value)
     assert_eq(err.kind, "server_error")
     assert_true(err.message:find("exec() is disabled", 1, true) ~= nil, tostring(err))

@@ -33,7 +33,7 @@ pub struct EngineCtx {
     pub cwd: Option<PathBuf>,
     /// Whether `exec` may run. Off, a call fails with a message saying so.
     pub allow_exec: bool,
-    /// The clock `now()`, `ago` and `spinner` read: one value for the render.
+    /// The clock `_.now()`, `ago` and `spinner` read: one value for the render.
     pub now: std::time::SystemTime,
     /// What the render's file items read (`read`, `stat`, `realpath`, `lup`,
     /// `glob`), each path stamped before it is read, where a daemon run keeps
@@ -151,6 +151,7 @@ static PURE: LazyLock<Environment<'static>> = LazyLock::new(|| {
     });
     library::absent::guard_builtins(&mut jinja);
     library::install(&mut jinja, Tier::Pure);
+    library::gather(&mut jinja);
     jinja
 });
 
@@ -159,6 +160,7 @@ static FULL: LazyLock<Environment<'static>> = LazyLock::new(|| {
     for tier in [Tier::Clock, Tier::Io, Tier::Exec, Tier::Memo, Tier::Daemon] {
         library::install(&mut jinja, tier);
     }
+    library::gather(&mut jinja);
     jinja
 });
 
@@ -228,7 +230,7 @@ pub fn op_error(message: impl Into<std::borrow::Cow<'static, str>>) -> Error {
     Error::new(ErrorKind::InvalidOperation, message)
 }
 
-/// How long `exec()` and `url()` wait when their `timeout=` does not say.
+/// How long `_.exec()` and `_.url()` wait when their `timeout=` does not say.
 pub const DEFAULT_CALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// The `timeout=` keyword of `function` (`exec`, `url`): a duration in the one
@@ -253,8 +255,8 @@ pub fn timeout_kwarg(kwargs: &Kwargs, function: &str) -> Result<std::time::Durat
     }
 }
 
-/// `exec(cmd, timeout='10s', stdin=none, sh='sh')` and
-/// `execa(cmd, ok=none, timeout=, stdin=, sh=)` (`name` says which), the one
+/// `_.exec(cmd, timeout='10s', stdin=none, sh='sh')` and
+/// `_.execa(cmd, ok=none, timeout=, stdin=, sh=)` (`name` says which), the one
 /// entry behind both spellings of each. A string runs `sh -c`; a list is
 /// argv, no shell. The child's environment is `ctx.env` and its directory
 /// `ctx.cwd`. `exec` fails on a non-zero exit and returns stdout; `execa`
@@ -360,7 +362,7 @@ fn ok_kwarg(kwargs: &Kwargs) -> Result<Option<Vec<i32>>, Error> {
 ///
 /// A string passes through; a bool renders `true`/`false` (not minijinja's
 /// `True`/`False`); a number renders canonically; undefined or none is an
-/// error (most often a missed ref reaching `exec()` unguarded); a sequence
+/// error (most often a missed ref reaching `_.exec()` unguarded); a sequence
 /// or map is an error pointing at `stdin=`.
 fn coerce_argv(name: &str, v: &MjValue, position: usize) -> Result<String, Error> {
     if let Some(s) = v.as_str() {
@@ -413,20 +415,20 @@ mod tests {
     #[test]
     fn exec_string_runs_under_sh() {
         let ctx = ctx_with(&[("FOO", "bar")], None);
-        assert_eq!(eval_in(ctx, "exec('echo $FOO')").unwrap(), "bar");
-        assert_eq!(eval("exec('echo a | tr a b')").unwrap(), "b");
+        assert_eq!(eval_in(ctx, "_.exec('echo $FOO')").unwrap(), "bar");
+        assert_eq!(eval("_.exec('echo a | tr a b')").unwrap(), "b");
     }
 
     #[test]
     fn exec_list_does_not_expand() {
         let ctx = ctx_with(&[("FOO", "bar")], None);
-        assert_eq!(eval_in(ctx, "exec(['echo', '$FOO'])").unwrap(), "$FOO");
+        assert_eq!(eval_in(ctx, "_.exec(['echo', '$FOO'])").unwrap(), "$FOO");
     }
 
     #[test]
     fn exec_list_coerces_scalars_and_names_the_bad_position() {
-        assert_eq!(eval("exec(['echo', 1, true])").unwrap(), "1 true");
-        let err = eval("exec(['echo', none])").unwrap_err();
+        assert_eq!(eval("_.exec(['echo', 1, true])").unwrap(), "1 true");
+        let err = eval("_.exec(['echo', none])").unwrap_err();
         assert!(err.contains("argument 2"), "unexpected error: {err}");
     }
 
@@ -434,7 +436,7 @@ mod tests {
     fn exec_child_env_is_the_render_env_not_the_process_env() {
         // The test process has HOME; the render's env does not.
         assert!(std::env::var_os("HOME").is_some());
-        assert_eq!(eval("exec('echo \"[$HOME]\"')").unwrap(), "[]");
+        assert_eq!(eval("_.exec('echo \"[$HOME]\"')").unwrap(), "[]");
     }
 
     #[test]
@@ -442,7 +444,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let want = dir.path().canonicalize().unwrap();
         let ctx = ctx_with(&[], Some(&want));
-        assert_eq!(eval_in(ctx, "exec('pwd')").unwrap(), want.to_str().unwrap());
+        assert_eq!(
+            eval_in(ctx, "_.exec('pwd')").unwrap(),
+            want.to_str().unwrap()
+        );
     }
 
     #[test]
@@ -451,7 +456,7 @@ mod tests {
         assert_eq!(eval("['echo', 'a b'] | exec()").unwrap(), "a b");
         assert_eq!(
             eval("'cat' | exec(stdin='piped')").unwrap(),
-            eval("exec('cat', stdin='piped')").unwrap()
+            eval("_.exec('cat', stdin='piped')").unwrap()
         );
     }
 
@@ -466,30 +471,30 @@ mod tests {
 
     #[test]
     fn exec_variadic_call_is_an_error() {
-        let err = eval("exec('echo', 'hi')").unwrap_err();
+        let err = eval("_.exec('echo', 'hi')").unwrap_err();
         assert!(
             err.contains("one command — a string for sh -c, or a list for argv"),
             "unexpected error: {err}"
         );
-        assert!(eval("exec()").is_err());
+        assert!(eval("_.exec()").is_err());
     }
 
     #[test]
     fn exec_sh_kwarg_picks_the_shell() {
         // `$0` is the shell as invoked, so it names the one that ran.
-        assert_eq!(eval("exec('echo $0', sh='bash')").unwrap(), "bash");
+        assert_eq!(eval("_.exec('echo $0', sh='bash')").unwrap(), "bash");
     }
 
     #[test]
     fn exec_non_string_non_list_command_errors() {
-        let err = eval("exec(42)").unwrap_err();
+        let err = eval("_.exec(42)").unwrap_err();
         assert!(err.contains("string"), "unexpected error: {err}");
     }
 
     #[test]
     fn exec_stdin_kwarg_reaches_the_child() {
         assert_eq!(
-            eval("exec('cat', stdin='round trip')").unwrap(),
+            eval("_.exec('cat', stdin='round trip')").unwrap(),
             "round trip"
         );
     }
@@ -497,20 +502,20 @@ mod tests {
     #[test]
     fn exec_stdin_takes_structured_data_through_tojson() {
         assert_eq!(
-            eval(r#"exec('cat', stdin=({"a": [1, "x"]} | tojson))"#).unwrap(),
+            eval(r#"_.exec('cat', stdin=({"a": [1, "x"]} | tojson))"#).unwrap(),
             r#"{"a": [1, "x"]}"#
         );
     }
 
     #[test]
     fn exec_unknown_kwarg_errors() {
-        let err = eval("exec('echo hi', bogus=1)").unwrap_err();
+        let err = eval("_.exec('echo hi', bogus=1)").unwrap_err();
         assert!(err.contains("bogus"), "unexpected error: {err}");
     }
 
     #[test]
     fn exec_stdin_rejects_non_string_value() {
-        let err = eval("exec('cat', stdin=true)").unwrap_err();
+        let err = eval("_.exec('cat', stdin=true)").unwrap_err();
         assert!(err.contains("stdin") && err.contains("tojson"), "{err}");
     }
 
@@ -518,12 +523,12 @@ mod tests {
     /// number of seconds.
     #[test]
     fn exec_timeout_is_a_duration() {
-        assert_eq!(eval("exec('echo hi', timeout='2s')").unwrap(), "hi");
-        assert_eq!(eval("exec('echo hi', timeout=2)").unwrap(), "hi");
-        let err = eval("exec('sleep 2', timeout='10ms')").unwrap_err();
+        assert_eq!(eval("_.exec('echo hi', timeout='2s')").unwrap(), "hi");
+        assert_eq!(eval("_.exec('echo hi', timeout=2)").unwrap(), "hi");
+        let err = eval("_.exec('sleep 2', timeout='10ms')").unwrap_err();
         assert!(err.contains("timed out after 10ms"), "{err}");
         for bad in ["'x'", "'0s'", "true"] {
-            let err = eval(&format!("exec('echo hi', timeout={bad})")).unwrap_err();
+            let err = eval(&format!("_.exec('echo hi', timeout={bad})")).unwrap_err();
             assert!(err.contains("exec(): timeout: "), "{bad}: {err}");
         }
     }
@@ -531,7 +536,7 @@ mod tests {
     /// The millisecond keyword is gone, and says what took its place.
     #[test]
     fn exec_timeout_ms_names_its_replacement() {
-        let err = eval("exec('echo hi', timeout_ms=5000)").unwrap_err();
+        let err = eval("_.exec('echo hi', timeout_ms=5000)").unwrap_err();
         assert!(
             err.contains("exec(): timeout_ms= is removed: write timeout='10s'"),
             "{err}"
@@ -540,7 +545,7 @@ mod tests {
 
     #[test]
     fn exec_string_failure_names_the_script() {
-        let err = eval("exec('kubectl-nope config current-context')").unwrap_err();
+        let err = eval("_.exec('kubectl-nope config current-context')").unwrap_err();
         assert!(
             err.contains("`sh -c 'kubectl-nope config current-context'`"),
             "unexpected error: {err}"
@@ -549,7 +554,7 @@ mod tests {
 
     #[test]
     fn exec_list_failure_names_the_program() {
-        let err = eval("exec(['false'])").unwrap_err();
+        let err = eval("_.exec(['false'])").unwrap_err();
         assert!(err.contains("`false`"), "unexpected error: {err}");
     }
 
@@ -557,7 +562,7 @@ mod tests {
     fn exec_missing_cwd_says_the_directory_is_missing() {
         let missing = std::path::Path::new("/nonexistent-comb-cwd");
         let ctx = ctx_with(&[], Some(missing));
-        let err = eval_in(ctx, "exec('echo hi')").unwrap_err();
+        let err = eval_in(ctx, "_.exec('echo hi')").unwrap_err();
         assert!(
             err.contains("failed to spawn in /nonexistent-comb-cwd"),
             "unexpected error: {err}"
@@ -567,7 +572,7 @@ mod tests {
     #[test]
     fn exec_disabled_names_the_context_in_both_forms() {
         let ctx = Arc::new(EngineCtx::default());
-        for expr in ["exec('echo hi')", "'echo hi' | exec()"] {
+        for expr in ["_.exec('echo hi')", "'echo hi' | exec()"] {
             let err = eval_in(ctx.clone(), expr).unwrap_err();
             assert!(
                 err.contains("exec() is disabled in this context"),
@@ -588,7 +593,7 @@ mod tests {
             r#"{"stdout":"o","stderr":"e","exit_code":1,"signal":null}"#
         );
         assert_eq!(
-            eval_json("execa(['sh', '-c', 'echo a b'])"),
+            eval_json("_.execa(['sh', '-c', 'echo a b'])"),
             r#"{"stdout":"a b","stderr":"","exit_code":0,"signal":null}"#
         );
     }
@@ -610,32 +615,32 @@ mod tests {
 
     #[test]
     fn execa_ok_list_fails_like_exec() {
-        let err = eval("execa('exit 4', ok=[0, 1])").unwrap_err();
+        let err = eval("_.execa('exit 4', ok=[0, 1])").unwrap_err();
         assert!(err.contains("`sh -c 'exit 4'`: exit status: 4"), "{err}");
-        assert_eq!(eval("execa('exit 1', ok=[0, 1]).exit_code").unwrap(), "1");
-        let err = eval("execa('echo x >&2; exit 3', ok=[0])").unwrap_err();
+        assert_eq!(eval("_.execa('exit 1', ok=[0, 1]).exit_code").unwrap(), "1");
+        let err = eval("_.execa('echo x >&2; exit 3', ok=[0])").unwrap_err();
         assert!(err.contains("exit status: 3: x"), "{err}");
     }
 
     #[test]
     fn execa_bad_ok_is_an_error() {
         for bad in ["0", "'0'", "['a']", "[0.5]", "[true]"] {
-            let err = eval(&format!("execa('true', ok={bad})")).unwrap_err();
+            let err = eval(&format!("_.execa('true', ok={bad})")).unwrap_err();
             assert!(err.contains("execa(): ok="), "{bad}: {err}");
         }
-        assert!(eval("exec('true', ok=[0])").is_err());
+        assert!(eval("_.exec('true', ok=[0])").is_err());
     }
 
     #[test]
     fn execa_timeout_fails() {
-        let err = eval("execa('sleep 5', timeout='50ms')").unwrap_err();
+        let err = eval("_.execa('sleep 5', timeout='50ms')").unwrap_err();
         assert!(err.contains("timed out after 50ms"), "{err}");
     }
 
     #[test]
     fn execa_disabled_names_the_context_in_both_forms() {
         let ctx = Arc::new(EngineCtx::default());
-        for expr in ["execa('echo hi')", "'echo hi' | execa()"] {
+        for expr in ["_.execa('echo hi')", "'echo hi' | execa()"] {
             let err = eval_in(ctx.clone(), expr).unwrap_err();
             assert!(
                 err.contains("exec() is disabled in this context"),

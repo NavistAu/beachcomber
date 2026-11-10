@@ -39,13 +39,12 @@ use crate::provider::source_call::{Called, Running, calls_in};
 use crate::provider::{FieldSchema, Source, SourceMetadata, SourceResult, Value};
 use libbeachcomber::engine::{EngineCtx, with_ctx};
 use libbeachcomber::eval::{
-    Finding, Known, Line, LineError, Probe, eval_line, eval_line_with, lint, refs_in,
-    undeclared_names,
+    Finding, Known, Line, LineError, Probe, eval_line_with, lint, refs_in, undeclared_names,
 };
 use libbeachcomber::fs::{MOST_TOUCHED, Touched};
 use libbeachcomber::virtual_fields::Ref;
 use minijinja::value::{Serde, Value as MjValue};
-use serde_json::{Value as Json, json};
+use serde_json::Value as Json;
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -210,15 +209,6 @@ pub struct ConfigSource {
 /// at load and at run. A line's message comes from the one evaluator, which
 /// has already taken the engine's frame off it, so a render that fails
 /// because a Source it calls failed shows no frame per Source down the chain.
-/// A `result` line over `context`, its failure flagged as a line's is.
-fn eval_result(
-    env: &minijinja::Environment<'_>,
-    line: &str,
-    context: &Json,
-) -> Result<Option<Json>, LineError> {
-    eval_line_with(env, line, MjValue::from(Serde(context)))
-}
-
 fn stage_error(spec: &ConfigSourceSpec, stage: &str, message: impl std::fmt::Display) -> String {
     format!("{}.{}: {stage}: {message}", spec.provider, spec.name)
 }
@@ -292,7 +282,7 @@ pub fn data_warnings(probe: &Probe<'_>, who: &str, data: &str, known: &Known<'_>
 
 /// The load warning for a `root` line at `who` that calls `exec`, `execa`, `url`
 /// or `plugin`: every distinct directory read runs the line, so the call forks
-/// (or fetches) once per new directory. Allowed, but `lup()` is what finds a
+/// (or fetches) once per new directory. Allowed, but `_.lup()` is what finds a
 /// root without leaving the process.
 pub fn root_warnings(who: &str, root: &str) -> Vec<String> {
     let used = libbeachcomber::eval::used_names(root);
@@ -306,8 +296,8 @@ pub fn root_warnings(who: &str, root: &str) -> Vec<String> {
         })
         .map(|name| {
             format!(
-                "{who} root: {name}() runs for every new directory read; find the root with \
-                 lup() instead"
+                "{who} root: _.{name}() runs for every new directory read; find the root with \
+                 _.lup() instead"
             )
         })
         .collect()
@@ -328,7 +318,7 @@ fn lint_data(probe: &Probe<'_>, data: &str) -> Option<String> {
 }
 
 /// What a value is, for an error message that must not carry the value (a
-/// `url()` body can carry tokens).
+/// `_.url()` body can carry tokens).
 fn kind(value: &Json) -> &'static str {
     match value {
         Json::Null => "none",
@@ -485,8 +475,12 @@ impl ConfigSource {
         self.env.get("HOME").map(String::as_str)
     }
 
-    fn underscore(&self) -> Json {
-        json!({"name": self.spec.name})
+    /// The line's `_`: `jinja`'s functions and `_.name`.
+    fn underscore(&self, jinja: &minijinja::Environment<'_>) -> MjValue {
+        libbeachcomber::library::underscore_with(
+            jinja,
+            &[("name", MjValue::from(self.spec.name.as_str()))],
+        )
     }
 
     /// The `data` line's `comb`: one daemon read at `dir` per provider the
@@ -604,7 +598,7 @@ impl ConfigSource {
             [
                 ("env", MjValue::from(Serde(&*self.env))),
                 ("comb", MjValue::from_dyn_object(comb.clone())),
-                ("_", MjValue::from(Serde(self.underscore()))),
+                ("_", self.underscore(&jinja)),
             ]
             .into_iter()
             .chain(plain),
@@ -614,12 +608,15 @@ impl ConfigSource {
             return Err(stage_error(&self.spec, "data", failed));
         }
         let data = data.map_err(|e| self.line_error("data", e))?;
-        let result_context = json!({"data": data, "_": self.underscore()});
+        let result_context = MjValue::from_pairs([
+            ("data", MjValue::from(Serde(&data))),
+            ("_", self.underscore(&jinja)),
+        ]);
 
         match &self.spec.result {
             ResultSpec::Whole(line) => {
                 let stage = |e: LineError| self.line_error("result", e);
-                match eval_result(&jinja, line, &result_context).map_err(stage)? {
+                match eval_line_with(&jinja, line, result_context.clone()).map_err(stage)? {
                     Some(Json::Object(map)) => Ok(SourceResult::from_json_object(&map)),
                     None => Ok(SourceResult::new()),
                     Some(other) => Err(stage(
@@ -630,7 +627,7 @@ impl ConfigSource {
             ResultSpec::Fields(pairs) => {
                 let mut out = SourceResult::new();
                 for (name, line) in pairs {
-                    let json = eval_result(&jinja, line, &result_context)
+                    let json = eval_line_with(&jinja, line, result_context.clone())
                         .map_err(|e| self.line_error(&format!("result.{name}"), e))?;
                     if let Some(v) = json.as_ref().and_then(Value::from_json) {
                         out.insert(name.clone(), v);
@@ -665,11 +662,14 @@ impl Source for ConfigSource {
         // A root is no run's input: what the walk finds is kept per directory
         // (`ProviderRegistry`'s kept roots), not checked as a record's files.
         let jinja = daemon_engine_env(self.plugins.clone());
-        let context = json!({"env": &*self.env, "_": self.underscore()});
+        let context = MjValue::from_pairs([
+            ("env", MjValue::from(Serde(&*self.env))),
+            ("_", self.underscore(&jinja)),
+        ]);
         let origin = format!("{}.{}", self.spec.provider, self.spec.name);
         let rendered = with_ctx(
             source_ctx(&self.env, Some(dir.into()), None, origin),
-            || eval_line(&jinja, line, &context),
+            || eval_line_with(&jinja, line, context),
         )
         .map_err(|e| stage_error(&self.spec, "root", e))?;
         match rendered {
@@ -869,7 +869,7 @@ mod tests {
         temp_env::with_var("X", Some("daemon-x"), || {
             let src = source(spec(
                 None,
-                "{{ exec('pwd') ~ ':' ~ env.X }}",
+                "{{ _.exec('pwd') ~ ':' ~ env.X }}",
                 fields(&[("out", "{{ data }}")]),
             ));
             let got = src.execute(Some(root.to_str().unwrap())).unwrap();
@@ -885,7 +885,7 @@ mod tests {
         temp_env::with_var("X", Some("daemon-x"), || {
             let src = source(spec(
                 None,
-                "{{ env.X ~ '/' ~ exec('echo $X') }}",
+                "{{ env.X ~ '/' ~ _.exec('echo $X') }}",
                 fields(&[("out", "{{ data }}")]),
             ));
             // The environment moves on after the snapshot; the Source keeps
@@ -906,7 +906,7 @@ mod tests {
         let src = with_env(
             spec(
                 Some(""),
-                "{{ exec('pwd') }}",
+                "{{ _.exec('pwd') }}",
                 fields(&[("out", "{{ data }}")]),
             ),
             snapshot,
@@ -1025,7 +1025,7 @@ mod tests {
         );
         // With a root line the same watch is fine, and so is an absolute one
         // without.
-        sp.root = Some("{{ lup('.git') | dirname }}".into());
+        sp.root = Some("{{ _.lup('.git') | dirname }}".into());
         assert!(source(sp.clone()).has_root());
         sp.root = None;
         sp.recorded = Schedule::watch(vec![], vec!["/etc/hosts".into()]);
@@ -1046,7 +1046,11 @@ mod tests {
 
     #[test]
     fn a_render_error_fails_the_execute() {
-        let src = source(spec(None, "{{ exec('false') }}", fields(&[("kept", "k")])));
+        let src = source(spec(
+            None,
+            "{{ _.exec('false') }}",
+            fields(&[("kept", "k")]),
+        ));
         let err = src.execute(None).unwrap_err();
         assert!(err.starts_with("demo.s: data: "), "{err}");
         let src = source(spec(None, "{{ 1 }}", fields(&[("a", "{{ 'a' + 1 }}")])));
@@ -1058,7 +1062,7 @@ mod tests {
     fn fail_fails_the_run_with_the_users_message() {
         let src = source(spec(
             None,
-            "{% if true %}{{ fail('no ssh agent') }}{% endif %}{{ 1 }}",
+            "{% if true %}{{ _.fail('no ssh agent') }}{% endif %}{{ 1 }}",
             fields(&[("kept", "k")]),
         ));
         assert_eq!(src.execute(None).unwrap_err(), "demo.s: data: no ssh agent");
@@ -1080,7 +1084,7 @@ mod tests {
     #[test]
     fn a_root_that_fails_to_render_is_an_error_not_the_home_instance() {
         let src = source(spec(
-            Some("{{ exec('false') }}"),
+            Some("{{ _.exec('false') }}"),
             "{{ 1 }}",
             fields(&[("a", "1")]),
         ));
@@ -1115,7 +1119,7 @@ mod tests {
         let sub = repo.join("a/b");
         std::fs::create_dir_all(&sub).unwrap();
         let src = source(spec(
-            Some("{{ lup('.git') | dirname }}"),
+            Some("{{ _.lup('.git') | dirname }}"),
             "x",
             fields(&[("a", "1")]),
         ));
@@ -1483,8 +1487,8 @@ mod tests {
     fn sources_call_reads_a_siblings_record() {
         let reader = Arc::new(FakeReader {
             records: HashMap::from([
-                (("demo".into(), "other".into()), json!({"x": 4})),
-                (("zed".into(), "t".into()), json!({"y": 5})),
+                (("demo".into(), "other".into()), serde_json::json!({"x": 4})),
+                (("zed".into(), "t".into()), serde_json::json!({"y": 5})),
             ]),
             ..Default::default()
         });

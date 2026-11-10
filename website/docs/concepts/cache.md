@@ -45,7 +45,7 @@ $ comb get time.once
 ```
 
 The first read ran `date` and kept the answer. The second found the kept answer at `cache()` and stopped there:
-`exec()` never ran.
+`_.exec()` never ran.
 
 Everything before `cache()` decides whether the kept answer can be used. Everything after it is the work that's
 skipped when it can.
