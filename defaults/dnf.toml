@@ -1,0 +1,26 @@
+# Fedora and RHEL's updates, from the metadata dnf already cached: `dnf check-update --cacheonly` fetches nothing (exit 100
+# is "updates", 0 "none"; any other exit is a failure, as with no cache). Off where `dnf` is not on the daemon's PATH.
+# Not run against a real dnf: written from its documentation. A non-root dnf keeps its own cache, so `dnf_update`
+# (opt-in, below) is what fills it for the user the daemon runs as.
+[daemon.providers.dnf]
+enabled.template = "{{ 'dnf' | which }}"
+
+[daemon.providers.dnf.sources.updates]
+# Names (the arch cut off), their number, and when the metadata was last refreshed (the newest repomd.xml among dnf's caches). Polled hourly.
+data = '''{% set ns = namespace(p=[], on=true) %}{% for l in (_.execa(['dnf', 'check-update', '--cacheonly'], ok=[0, 100], timeout='60s').stdout or '') | split('\n') %}{% if 'Obsoleting' in l %}{% set ns.on = false %}{% endif %}{% if ns.on and (l | split | length) == 3 and '.' in (l | split | first) %}{% set ns.p = ns.p + [(l | split | first) | regex_replace('\.[^.]+$', '')] %}{% endif %}{% endfor %}{% set tt = namespace(t=none) %}{% for f in ('/var/cache/dnf/*/repodata/repomd.xml' | glob) + ('/var/cache/libdnf5/*/repodata/repomd.xml' | glob) + (('/var/tmp/dnf-' ~ env.USER ~ '-*/*/repodata/repomd.xml') | glob) + ('~/.cache/libdnf5/*/repodata/repomd.xml' | glob) %}{% set m = (f | stat).mtime | int %}{% if tt.t is none or m > tt.t %}{% set tt.t = m %}{% endif %}{% endfor %}{{ {'p': ns.p, 't': tt.t} | tojson }}'''
+result.packages = "{{ (data | fromjson).p }}"
+result.count = "{{ (data | fromjson).p | length }}"
+result.checked = "{{ (data | fromjson).t }}"
+return = "{{ result | poll('1h', 2) | failback('10m', 3) }}"
+
+# Opt-in: refreshes the metadata daily (`dnf makecache --refresh`: a network fetch; as a user it fills the user's own cache, no sudo). Off until you turn it on:
+#   [daemon.providers.dnf_update]
+#   enabled = true
+[daemon.providers.dnf_update]
+enabled = false
+
+[daemon.providers.dnf_update.sources.run]
+# When `dnf makecache` last ran here. `dnf.checked` is its metadata's age.
+data = "{% if not ('dnf' | which) %}{{ _.fail('dnf is not on the PATH') }}{% endif %}{{ _.exec(['dnf', 'makecache', '--refresh'], timeout='10m') or '' }}"
+result.at = "{{ _.now() }}"
+return = "{{ result | poll('24h', 1) | failback('1h', 3) }}"

@@ -9,12 +9,21 @@ use beachcomber::provider::{Source, SourceResult};
 use crate::provider_conformance::conformance::fixtures::ConformanceFixture;
 
 /// Iterate every `(provider_name, source_name, source)` triple of the shipped
-/// registry: every Source a shipped file declares. Yields owned data so callers
+/// registry: every Source a shipped file declares, of a provider that is on. Yields owned data so callers
 /// can iterate without holding registry references.
 pub fn enumerate_sources() -> Vec<(String, String, std::sync::Arc<dyn Source>)> {
     let registry = crate::common::registry::with_shipped_defaults();
     let mut out = Vec::new();
     for provider_name in registry.provider_names() {
+        // A provider shipped off (`brew_update`, the opt-in refreshes) is not
+        // run: its Source would fetch from the network on a developer's machine.
+        // The package managers are run with stand-ins in `shipped/packages.rs`:
+        // here they would run the developer's own (`brew outdated` takes a second).
+        if registry.is_disabled(&provider_name)
+            || ["brew", "apt", "dnf", "pacman", "apk"].contains(&provider_name.as_str())
+        {
+            continue;
+        }
         let source_metas = match registry.provider_sources(&provider_name) {
             Some(m) => m.to_vec(),
             None => continue,

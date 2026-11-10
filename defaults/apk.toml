@@ -1,0 +1,12 @@
+# Alpine's upgradable packages, from the index apk already holds: `apk version -l '<'` fetches nothing.
+# Off where `apk` is not on the daemon's PATH. Refreshing the index is `apk update`, which needs root, so none ships.
+[daemon.providers.apk]
+enabled.template = "{{ 'apk' | which }}"
+
+[daemon.providers.apk.sources.upgradable]
+# Names (the version cut off), their number, and when the index was last refreshed (the newest mtime among the APKINDEX files in apk's cache). Polled hourly; also run when the cache or the installed database change.
+data = '''{% set ns = namespace(p=[]) %}{% for l in (_.exec(['apk', 'version', '-l', '<'], timeout='30s') or '') | split('\n') %}{% if ' < ' in l %}{% set ns.p = ns.p + [l | regex_replace('^(.+?)-[0-9].*$', '${1}')] %}{% endif %}{% endfor %}{{ ns.p | tojson }}'''
+result.packages = "{{ data | fromjson }}"
+result.count = "{{ data | fromjson | length }}"
+result.checked = '''{% set ns = namespace(t=none) %}{% for f in ('/var/cache/apk/APKINDEX.*' | glob) + ('/etc/apk/cache/APKINDEX.*' | glob) %}{% set m = (f | stat).mtime | int %}{% if ns.t is none or m > ns.t %}{% set ns.t = m %}{% endif %}{% endfor %}{{ ns.t }}'''
+return = "{{ result | poll('1h', 2) | watch('/var/cache/apk', '/lib/apk/db/installed') | failback('10m', 3) }}"

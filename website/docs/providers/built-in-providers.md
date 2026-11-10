@@ -44,6 +44,9 @@ Every example below is a real run, with personal details replaced.
 | [`gcloud`](#gcloud), [`gcloud_configs`](#gcloud_configs) | Project and account in effect; every configuration | global | — |
 | [`kubecontext`](#kubecontext) | kubectl context and namespace | global | `kubectl` |
 | [`talos`](#talos) | talosctl context | global | `talosctl` |
+| [`docker`](#docker), [`podman`](#podman) | Context, whether the engine answers, running containers | global | `docker` / `podman` |
+| [`containers`](#containers) | Whichever engine is running, for themes written for everyone | global | either |
+| [`brew`](#brew), [`apt`](#apt), [`dnf`](#dnf), [`pacman`](#pacman), [`apk`](#apk) | Outdated packages, from what the manager already knows | global | the manager |
 | [`conda`](#conda) | Active conda environment | global | — |
 | [`op`](#op) | Whether a 1Password service-account token is set | global | — |
 | [`ssh`](#ssh) | Whether your ssh agent answers, and the keys it holds | global | `ssh-add` |
@@ -291,7 +294,7 @@ $ comb g.j python
 The tools [mise](https://mise.jdx.dev) has in effect: each tool's version as `mise ls --current` reports it, run at
 the nearest directory with a `mise.toml` or `.mise.toml`, else at `~`. That answer already includes mise's global
 tools and its parent configs. A tool the project does not set comes from `~`. Reruns when either file, or mise's global
-config directory, changes. Needs `mise` on the daemon's `PATH`.
+config directory, changes. Needs `mise` on the daemon's `PATH`; without it the provider is off.
 
 ```shell-session
 $ comb g.j mise
@@ -455,7 +458,72 @@ The [talosctl](https://www.talos.dev) context in effect, from `talosctl config i
 
 `kubecontext` and `talos` run a command, so they render only where a template may run commands: `comb get`,
 `comb eval`, `comb watch` and `comb status`, and an SDK client created with its `exec` option on (off by default).
-Elsewhere the field is the error `exec() is disabled in this context`.
+Elsewhere the field is the error `exec() is disabled in this context`. Each starts by checking the tool is on your
+shell's `PATH` (`'kubectl' | which`) and is absent without it, spawning nothing.
+
+## Containers
+
+### docker
+
+Read in your shell, as `kubecontext` is, because the answer follows `$DOCKER_CONTEXT`, `$DOCKER_HOST` and
+`$DOCKER_CONFIG`, which the daemon would see only as they were when it started. Each field is remembered for 30
+seconds. Needs `docker` on your shell's `PATH`; every field is absent without it.
+
+| Field | Meaning | Example |
+|---|---|---|
+| `context` | `docker context show` | `orbstack` |
+| `running` | `docker ps -q` answered (2 second limit); `false` when the engine is down | `true` |
+| `count` | Running containers; absent unless `running` | `3` |
+
+A `ps` that hangs past the limit fails the read of `count` and `running`, as any failed command in a template does.
+
+### podman
+
+The same fields, from `podman`, using only its own CLI. `context` is `$CONTAINER_CONNECTION`, else the default of
+`podman system connection list` (a Podman machine on macOS has one); absent when there is none, as with the local
+socket on Linux. Written from Podman's documentation and not run against a real install.
+
+### containers
+
+A template over both, for themes and plugins written for everyone: `engine` (`podman` or `docker`, the first that is
+running, podman first; absent when none is), `running` (absent when neither tool is installed) and `count` (summed;
+absent unless one is running).
+
+## Package managers
+
+`brew`, `apt`, `dnf`, `pacman` and `apk` each answer from what the manager already knows: nothing is fetched and
+nothing needs `sudo`. Each is off where its tool is not on the daemon's `PATH` (`enabled.template`), and polled hourly.
+`brew`, `apt` and `apk` also run again when their package lists or installed-package database change.
+
+| Field | Meaning | Example |
+|---|---|---|
+| `count` | Outdated packages | `4` |
+| `packages` | Their names: `'openssl' in apt.packages` | `["openssl", "curl"]` |
+| `checked` | When the package lists were last refreshed, epoch seconds from their files' mtimes; absent when none is found | `1794328194` |
+
+| Provider | Command | Lists dated by |
+|---|---|---|
+| `brew` | `brew outdated --quiet` with `HOMEBREW_NO_AUTO_UPDATE=1` (brew would otherwise update itself first) | `<brew --repository>/.git/FETCH_HEAD` |
+| `apt` | `apt list --upgradable` | newest `Packages`/`Release` file in `/var/lib/apt/lists` |
+| `dnf` | `dnf check-update --cacheonly` (exit 100 means updates) | newest `repomd.xml` in dnf's cache |
+| `pacman` | `checkupdates --nosync` (pacman-contrib) | `sync/*.db` of its own copy, `${CHECKUPDATES_DB:-${TMPDIR:-/tmp}/checkup-db-$UID}` |
+| `apk` | `apk version -l '<'` | `APKINDEX.*` in `/var/cache/apk` or `/etc/apk/cache` |
+
+A manager that fails (no cache yet, a lock) has no fields, not a count of 0.
+
+Refreshing the lists is an action that uses the network, so it is opt-in: `brew_update`, `dnf_update` and
+`pacman_update` ship **disabled**, and each runs daily when you switch it on in your configuration. A Source has no
+`enabled` of its own, so each is a provider of its own:
+
+```toml
+[daemon.providers.brew_update]
+enabled = true
+```
+
+`brew_update` runs `brew update --quiet`, `dnf_update` `dnf makecache --refresh` (as the daemon's user, so it fills that
+user's own cache), `pacman_update` a plain `checkupdates`, which syncs the copy `pacman` reads. Each has one field,
+`at`, when it last ran. `apt` and `apk` have none, because `apt update` and `apk update` need root. `apt`, `apk`,
+`dnf` and `pacman` are not run against a real system by the tests, which use stand-in commands printing recorded output.
 
 ## Shell environment
 

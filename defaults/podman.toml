@@ -1,0 +1,9 @@
+# Podman, read in the shell that asks, as `docker` is: client templates, absent when `podman` is not on the shell's PATH,
+# each memoised for 30 seconds. Written from Podman's documentation; not run against a real install.
+[client.providers.podman.template]
+# The connection in effect: $CONTAINER_CONNECTION, else the default of `podman system connection list` (a Podman machine on macOS has one). Absent when there is none, as on Linux with the local socket.
+context = '''{{ (env.CONTAINER_CONNECTION or ('podman system connection list --format json 2>/dev/null || true' | watch('~/.config/containers/podman-connections.json') | ttl('30s') | cache(env.CONTAINER_CONNECTION) | exec() | fromjson | selectattr('Default') | map(attribute='Name') | first)) if 'podman' | which }}'''
+# The running containers: `podman ps -q` with a 2 second limit, counted; absent while the engine does not answer.
+count = '''{{ (("n=$(podman ps -q 2>/dev/null) && echo \"$n\" | awk 'NF{c++} END{print c+0}'; true" | ttl('30s') | cache(env.CONTAINER_CONNECTION, env.CONTAINER_HOST) | exec(timeout='2s') or none) | int) if 'podman' | which }}'''
+# Whether the engine answers; absent when podman is not installed.
+running = "{{ (podman.count is number) if 'podman' | which }}"

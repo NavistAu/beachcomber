@@ -1,0 +1,9 @@
+# Whichever container engine is running, for themes and plugins written for everyone: reads `podman` then `docker`.
+# Absent when neither is installed.
+[client.providers.containers.template]
+# `podman` or `docker`, the first that is running (podman first); absent when none is.
+engine = "{{ 'podman' if podman.running else 'docker' if docker.running }}"
+# Whether any engine is running; absent when neither tool is installed.
+running = "{{ (podman.running or docker.running or false) if podman.running is boolean or docker.running is boolean }}"
+# Running containers, summed over the engines; absent unless one is running.
+count = "{{ ((podman.count or 0) + (docker.count or 0)) if containers.engine }}"

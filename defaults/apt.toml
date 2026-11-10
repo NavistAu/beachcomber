@@ -1,0 +1,12 @@
+# Debian and Ubuntu's upgradable packages, from the lists apt already holds: `apt list --upgradable` fetches nothing.
+# Off where `apt` is not on the daemon's PATH. Refreshing the lists is `apt update`, which needs root, so none ships.
+[daemon.providers.apt]
+enabled.template = "{{ 'apt' | which }}"
+
+[daemon.providers.apt.sources.upgradable]
+# Names, their number, and when the lists were last refreshed (the newest mtime among /var/lib/apt/lists's Packages and Release files). Polled hourly; also run when the lists or dpkg's status change (an update or an upgrade finished).
+data = '''{% set ns = namespace(p=[]) %}{% for l in (_.exec(['apt', 'list', '--upgradable'], timeout='30s') or '') | split('\n') %}{% if '[upgradable from' in l %}{% set ns.p = ns.p + [l | split('/') | first] %}{% endif %}{% endfor %}{{ ns.p | tojson }}'''
+result.packages = "{{ data | fromjson }}"
+result.count = "{{ data | fromjson | length }}"
+result.checked = '''{% set ns = namespace(t=none) %}{% for f in ('/var/lib/apt/lists/*_Packages*' | glob) + ('/var/lib/apt/lists/*Release' | glob) %}{% set m = (f | stat).mtime | int %}{% if ns.t is none or m > ns.t %}{% set ns.t = m %}{% endif %}{% endfor %}{{ ns.t }}'''
+return = "{{ result | poll('1h', 2) | watch('/var/lib/apt/lists', '/var/lib/dpkg/status') | failback('10m', 3) }}"
