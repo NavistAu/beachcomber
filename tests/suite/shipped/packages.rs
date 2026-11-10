@@ -4,7 +4,7 @@
 //! files (`checked`) are absolute system paths, so a test replaces the shipped
 //! line's path with a temp directory, as `sudo.rs` does.
 //!
-//! The opt-in refresh providers (`brew_update`, ...) ship off; a test turns
+//! The opt-in refreshes (the `update` Sources: `brew.update`, ...) ship off; a test turns
 //! one on in a later file and sees the stand-in run.
 
 use super::{age, served};
@@ -99,7 +99,7 @@ fn read(s: &super::Served, key: &str) -> Option<Value> {
     s.get(key, None)
 }
 
-const ON: &str = "[daemon.providers.NAME_update]\nenabled = true\n";
+const ON: &str = "[daemon.providers.NAME.sources.update]\nenabled = true\n";
 
 // ---- brew ----
 
@@ -166,7 +166,7 @@ fn brew_missing_is_off() {
     let b = bin(&[]);
     let s = served(&[("PATH", &b.path)], &ON.replace("NAME", "brew"));
     assert_eq!(read(&s, "brew"), None);
-    assert_eq!(read(&s, "brew_update"), None);
+    assert_eq!(read(&s, "brew.at"), None);
 }
 
 /// The refresh ships off, runs nothing; turned on it runs `brew update`.
@@ -174,12 +174,18 @@ fn brew_missing_is_off() {
 fn brew_update_is_opt_in() {
     let b = brew_bin(BREW);
     let s = served(&[("PATH", &b.path)], "");
-    assert_eq!(read(&s, "brew_update"), None);
+    assert_eq!(read(&s, "brew.at"), None);
     assert!(b.calls().is_empty(), "{:?}", b.calls());
+    assert_eq!(
+        read(&s, "brew.count"),
+        Some(json!(2)),
+        "its sibling answers"
+    );
+    assert_eq!(b.calls(), ["brew outdated --quiet"]);
 
     let b = brew_bin(BREW);
     let s = served(&[("PATH", &b.path)], &ON.replace("NAME", "brew"));
-    let at = read(&s, "brew_update.at").expect("ran");
+    let at = read(&s, "brew.at").expect("ran");
     assert!(at.is_number(), "{at}");
     assert_eq!(b.calls(), ["brew update --quiet"]);
 }
@@ -355,13 +361,13 @@ fn dnf_exit_0_is_none_and_exit_1_is_a_failure() {
 fn dnf_update_is_opt_in() {
     let b = bin(&[("dnf", &says("", 0))]);
     let s = served(&[("PATH", &b.path), ("USER", "tester")], "");
-    assert_eq!(read(&s, "dnf_update"), None);
+    assert_eq!(read(&s, "dnf.at"), None);
     let b = bin(&[("dnf", &says("", 0))]);
     let s = served(
         &[("PATH", &b.path), ("USER", "tester")],
         &ON.replace("NAME", "dnf"),
     );
-    assert!(read(&s, "dnf_update.at").is_some());
+    assert!(read(&s, "dnf.at").is_some());
     assert!(
         b.calls().contains(&"dnf makecache --refresh".to_string()),
         "{:?}",
@@ -415,10 +421,10 @@ fn pacman_exit_2_is_none_and_exit_1_is_a_failure() {
 fn pacman_update_is_opt_in() {
     let b = bin(&[("checkupdates", &says(PACMAN, 0))]);
     let s = served(&[("PATH", &b.path)], "");
-    assert_eq!(read(&s, "pacman_update"), None);
+    assert_eq!(read(&s, "pacman.at"), None);
     let b = bin(&[("checkupdates", &says(PACMAN, 0))]);
     let s = served(&[("PATH", &b.path)], &ON.replace("NAME", "pacman"));
-    assert!(read(&s, "pacman_update.at").is_some());
+    assert!(read(&s, "pacman.at").is_some());
     assert!(
         b.calls().contains(&"checkupdates --nocolor".to_string()),
         "{:?}",

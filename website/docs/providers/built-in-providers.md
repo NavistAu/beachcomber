@@ -511,19 +511,19 @@ nothing needs `sudo`. Each is off where its tool is not on the daemon's `PATH` (
 
 A manager that fails (no cache yet, a lock) has no fields, not a count of 0.
 
-Refreshing the lists is an action that uses the network, so it is opt-in: `brew_update`, `dnf_update` and
-`pacman_update` ship **disabled**, and each runs daily when you switch it on in your configuration. A Source has no
-`enabled` of its own, so each is a provider of its own:
+Refreshing the lists is an action that uses the network, so it is opt-in: `brew`, `dnf` and `pacman` each have an
+`update` Source that ships **disabled** (`enabled = false`), and runs daily when you switch it on in your configuration:
 
 ```toml
-[daemon.providers.brew_update]
+[daemon.providers.brew.sources.update]
 enabled = true
 ```
 
-`brew_update` runs `brew update --quiet`, `dnf_update` `dnf makecache --refresh` (as the daemon's user, so it fills that
-user's own cache), `pacman_update` a plain `checkupdates`, which syncs the copy `pacman` reads. Each has one field,
-`at`, when it last ran. `apt` and `apk` have none, because `apt update` and `apk update` need root. `apt`, `apk`,
-`dnf` and `pacman` are not run against a real system by the tests, which use stand-in commands printing recorded output.
+`brew.update` runs `brew update --quiet`, `dnf.update` `dnf makecache --refresh` (as the daemon's user, so it fills
+that user's own cache), `pacman.update` a plain `checkupdates`, which syncs the copy `pacman` reads. Each adds one
+field to its provider, `at`, when it last ran. `apt` and `apk` have none, because `apt update` and `apk update` need
+root. `apt`, `apk`, `dnf` and `pacman` are not run against a real system by the tests, which use stand-in commands
+printing recorded output.
 
 ## Shell environment
 

@@ -823,6 +823,70 @@ fn only_enabled_poll_is_on_the_abstract_provider() {
     );
 }
 
+/// A Source's `enabled` has the provider's shape, and on a Source prototype
+/// (`<p>.sources._`, `_.sources._`) only `enabled.poll`.
+#[test]
+fn a_sources_enabled_is_shaped_as_a_providers() {
+    let at = "[daemon.providers.git.sources.diff]";
+    for good in [
+        "true",
+        "false",
+        "{ template = \"{{ 1 }}\", poll = \"10s\" }",
+    ] {
+        assert_eq!(
+            seeded_errors(&format!("{at}\nenabled = {good}\n")),
+            Vec::<String>::new(),
+            "{good}"
+        );
+    }
+    for (bad, error) in [
+        (
+            "0",
+            format!(
+                "{at} enabled must be true or false, or a table of template and poll, not integer"
+            ),
+        ),
+        (
+            "{ a = 1 }",
+            "unknown key 'a' in [daemon.providers.git.sources.diff.enabled]".into(),
+        ),
+        (
+            "{ template = 1 }",
+            format!("{at} enabled.template must be a string (a jinja line), not integer"),
+        ),
+        (
+            "{ poll = \"0s\" }",
+            format!("{at} enabled.poll: must be at least 1s"),
+        ),
+    ] {
+        assert_eq!(
+            seeded_errors(&format!("{at}\nenabled = {bad}\n")),
+            vec![error],
+            "{bad}"
+        );
+    }
+    for proto in [
+        "[daemon.providers.git.sources._]",
+        "[daemon.providers._.sources._]",
+    ] {
+        assert_eq!(
+            seeded_errors(&format!("{proto}\nenabled.poll = \"10s\"\n")),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            seeded_errors(&format!("{proto}\nenabled = false\n")),
+            vec![format!(
+                "{proto} enabled: the abstract Source applies to every Source: name the Source, \
+                 [daemon.providers.<p>.sources.<s>] enabled = false"
+            )]
+        );
+        assert_eq!(
+            seeded_errors(&format!("{proto}\nenabled.template = \"{{{{ 1 }}}}\"\n")).len(),
+            1
+        );
+    }
+}
+
 #[test]
 fn a_non_integer_decay_is_an_error() {
     for (bad, shown) in [
@@ -1225,9 +1289,9 @@ fn every_removed_form_is_an_error() {
             ),
             ("[client.providers.x]", "[client.providers.x]"),
         ] {
-            // `enabled` is a provider's own key now; where it is not, it is
-            // still the removed one.
-            if key == "enabled" && header == "[daemon.providers.git]" {
+            // `enabled` is a provider's and a Source's own key now; where it
+            // is not, it is still the removed one.
+            if key == "enabled" && header.starts_with("[daemon.providers.") {
                 continue;
             }
             assert_eq!(

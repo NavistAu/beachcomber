@@ -2,7 +2,7 @@
 # `${CHECKUPDATES_DB:-${TMPDIR:-/tmp}/checkup-db-$UID}`, and fetches nothing (exit 0 is "updates", 2 "none", any other a
 # failure, as with no copy yet). Needs no root. Off where `checkupdates` is not on the daemon's PATH. Not run against a
 # real Arch: written from its manual. That copy is filled by a plain `checkupdates` (a timer of yours, or the opt-in
-# `pacman_update` below).
+# `pacman.update` below).
 [daemon.providers.pacman]
 enabled.template = "{{ 'checkupdates' | which }}"
 
@@ -15,13 +15,11 @@ result.checked = "{{ (data | fromjson).t }}"
 return = "{{ result | poll('1h', 2) | watch('/var/lib/pacman/local') | failback('10m', 3) }}"
 
 # Opt-in: syncs checkupdates's copy daily (a plain `checkupdates`: a network fetch, no root). Off until you turn it on:
-#   [daemon.providers.pacman_update]
+#   [daemon.providers.pacman.sources.update]
 #   enabled = true
-[daemon.providers.pacman_update]
-enabled = false
-
-[daemon.providers.pacman_update.sources.run]
+[daemon.providers.pacman.sources.update]
 # When `checkupdates` last ran here. `pacman.checked` follows it.
-data = "{% if not ('checkupdates' | which) %}{{ _.fail('checkupdates is not on the PATH') }}{% endif %}{{ _.execa(['checkupdates', '--nocolor'], ok=[0, 2], timeout='5m').exit_code }}"
+enabled = false
+data = "{{ _.execa(['checkupdates', '--nocolor'], ok=[0, 2], timeout='5m').exit_code }}"
 result.at = "{{ _.now() }}"
 return = "{{ result | poll('24h', 1) | failback('1h', 3) }}"

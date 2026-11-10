@@ -87,7 +87,8 @@ pub enum SchedulerMessage {
         /// registry the scheduler has not caught up with.
         registry: RegistryHandle,
     },
-    /// `provider`'s `enabled.template` rendered `on`. When the registry in
+    /// `provider`'s `enabled.template` rendered `on` (`provider` is `p.s` for a
+    /// Source's, which switches that Source alone). When the registry in
     /// force has it the other way, a copy with it switched is put in force
     /// as a reload would ([`ProviderRegistry::switched`]): only its Sources,
     /// and the Sources that call them, are touched.

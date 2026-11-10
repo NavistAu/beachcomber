@@ -1,6 +1,6 @@
 # Homebrew's outdated formulae and casks, from what it already knows: nothing is fetched. brew would otherwise update
 # itself first (a network fetch) before `outdated`, so the command sets HOMEBREW_NO_AUTO_UPDATE. Off where `brew` is not on
-# the daemon's PATH. The lists are refreshed by `brew update`, which is the opt-in `brew_update` provider (shipped off).
+# the daemon's PATH. The lists are refreshed by `brew update`, which is the opt-in `brew.update` Source (shipped off).
 [daemon.providers.brew]
 enabled.template = "{{ 'brew' | which }}"
 
@@ -13,13 +13,11 @@ result.checked = '''{% set f = (_.exec('brew --repository') ~ '/.git/FETCH_HEAD'
 return = "{{ result | poll('1h', 2) | watch('/opt/homebrew/.git/FETCH_HEAD', '/usr/local/Homebrew/.git/FETCH_HEAD', '/home/linuxbrew/.linuxbrew/Homebrew/.git/FETCH_HEAD') | failback('10m', 3) }}"
 
 # Opt-in: refreshes brew's lists daily (`brew update`: a network fetch, no sudo). Off until you turn it on:
-#   [daemon.providers.brew_update]
+#   [daemon.providers.brew.sources.update]
 #   enabled = true
-[daemon.providers.brew_update]
-enabled = false
-
-[daemon.providers.brew_update.sources.run]
+[daemon.providers.brew.sources.update]
 # When `brew update` last ran here. `brew.checked` follows it.
-data = "{% if not ('brew' | which) %}{{ _.fail('brew is not on the PATH') }}{% endif %}{{ _.exec('brew update --quiet', timeout='5m') or '' }}"
+enabled = false
+data = "{{ _.exec('brew update --quiet', timeout='5m') or '' }}"
 result.at = "{{ _.now() }}"
 return = "{{ result | poll('24h', 1) | failback('1h', 3) }}"

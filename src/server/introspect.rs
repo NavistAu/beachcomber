@@ -172,11 +172,22 @@ pub(super) async fn handle_introspect_providers(
 
         let disabled_reason = registry.disabled_reason(name);
         let disabled = disabled_reason.is_some();
-        if let Some(e) = registry.gate_error(name) {
-            verdicts.push(serde_json::json!({
-                "level": "WARN",
-                "message": format!("{name} enabled.template failed: {e}"),
-            }));
+        let source_names: Vec<String> = registry
+            .provider_metadata(name)
+            .map(|m| {
+                m.sources
+                    .iter()
+                    .map(|s| format!("{name}.{}", s.name))
+                    .collect()
+            })
+            .unwrap_or_default();
+        for gated in std::iter::once(name).chain(&source_names) {
+            if let Some(e) = registry.gate_error(gated) {
+                verdicts.push(serde_json::json!({
+                    "level": "WARN",
+                    "message": format!("{gated} enabled.template failed: {e}"),
+                }));
+            }
         }
         let (sources_out, invalidation) = if let Some(meta) = registry.provider_metadata(name) {
             // Collect per-source info.
@@ -189,14 +200,14 @@ pub(super) async fn handle_introspect_providers(
                         .iter()
                         .map(|f| serde_json::json!({"name": f.name}))
                         .collect();
+                    let why = disabled_reason
+                        .clone()
+                        .or_else(|| registry.disabled_reason(&format!("{name}.{}", sm.name)));
                     serde_json::json!({
                         "name": sm.name,
                         "fields": fields,
-                        "invalidation": if let Some(why) = &disabled_reason {
-                            why.clone()
-                        } else {
-                            summarize_invalidation(&sm.schedule)
-                        },
+                        "disabled": why.is_some(),
+                        "invalidation": why.unwrap_or_else(|| summarize_invalidation(&sm.schedule)),
                     })
                 })
                 .collect();

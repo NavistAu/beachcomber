@@ -12,11 +12,18 @@ use crate::provider_conformance::conformance::fixtures::ConformanceFixture;
 /// registry: every Source a shipped file declares, of a provider that is on. Yields owned data so callers
 /// can iterate without holding registry references.
 pub fn enumerate_sources() -> Vec<(String, String, std::sync::Arc<dyn Source>)> {
-    let registry = crate::common::registry::with_shipped_defaults();
+    sources_of(&crate::common::registry::with_shipped_defaults())
+}
+
+/// [`enumerate_sources`] of any registry: every Source that is on.
+pub fn sources_of(
+    registry: &beachcomber::provider::registry::ProviderRegistry,
+) -> Vec<(String, String, std::sync::Arc<dyn Source>)> {
     let mut out = Vec::new();
     for provider_name in registry.provider_names() {
-        // A provider shipped off (`brew_update`, the opt-in refreshes) is not
-        // run: its Source would fetch from the network on a developer's machine.
+        // A provider or Source shipped off (`brew.update`, the opt-in
+        // refreshes) is not run: it would fetch from the network on a
+        // developer's machine.
         // The package managers are run with stand-ins in `shipped/packages.rs`:
         // here they would run the developer's own (`brew outdated` takes a second).
         if registry.is_disabled(&provider_name)
@@ -30,6 +37,9 @@ pub fn enumerate_sources() -> Vec<(String, String, std::sync::Arc<dyn Source>)> 
         };
         for source_meta in source_metas {
             let source_name = source_meta.name.clone();
+            if registry.is_source_disabled(&provider_name, &source_name) {
+                continue;
+            }
             if let Some(arc) = registry.source(&provider_name, &source_name) {
                 out.push((provider_name.clone(), source_name, arc));
             }

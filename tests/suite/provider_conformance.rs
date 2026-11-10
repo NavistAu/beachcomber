@@ -41,3 +41,26 @@ fn all_sources_pass_conformance() {
         failures.join("\n"),
     );
 }
+
+/// A Source switched off is not run here, its siblings are.
+#[test]
+fn the_harness_skips_a_disabled_source() {
+    let layer: toml::Value = toml::from_str(
+        "[daemon.providers.cfx.sources.on]\ndata = \"{{ 1 }}\"\nresult.a = \"{{ data }}\"\n\
+         [daemon.providers.cfx.sources.off]\nenabled = false\ndata = \"{{ 2 }}\"\n\
+         result.b = \"{{ data }}\"\n",
+    )
+    .unwrap();
+    let config = crate::common::registry::config_over_shipped(vec![("/t/cfx.toml".into(), layer)]);
+    let registry = beachcomber::provider::registry::ProviderRegistry::with_config(
+        &config,
+        &std::env::vars().collect(),
+    )
+    .unwrap();
+    let cfx: Vec<String> = sources_of(&registry)
+        .into_iter()
+        .filter(|(p, _, _)| p == "cfx")
+        .map(|(_, s, _)| s)
+        .collect();
+    assert_eq!(cfx, ["on"]);
+}

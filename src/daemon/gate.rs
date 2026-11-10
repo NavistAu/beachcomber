@@ -1,4 +1,5 @@
-//! The poll of every provider's `enabled.template`. A task of its own, off the
+//! The poll of every provider's and Source's `enabled.template` (a Source's
+//! named `p.s`, [`crate::provider::gate`]). A task of its own, off the
 //! scheduler's loop: each check renders on the blocking pool, holding no lock
 //! and nothing but the registry it took, and one slow check delays only
 //! itself. When a check says other than the registry in force, the scheduler

@@ -1,6 +1,6 @@
 # Fedora and RHEL's updates, from the metadata dnf already cached: `dnf check-update --cacheonly` fetches nothing (exit 100
 # is "updates", 0 "none"; any other exit is a failure, as with no cache). Off where `dnf` is not on the daemon's PATH.
-# Not run against a real dnf: written from its documentation. A non-root dnf keeps its own cache, so `dnf_update`
+# Not run against a real dnf: written from its documentation. A non-root dnf keeps its own cache, so `dnf.update`
 # (opt-in, below) is what fills it for the user the daemon runs as.
 [daemon.providers.dnf]
 enabled.template = "{{ 'dnf' | which }}"
@@ -14,13 +14,11 @@ result.checked = "{{ (data | fromjson).t }}"
 return = "{{ result | poll('1h', 2) | failback('10m', 3) }}"
 
 # Opt-in: refreshes the metadata daily (`dnf makecache --refresh`: a network fetch; as a user it fills the user's own cache, no sudo). Off until you turn it on:
-#   [daemon.providers.dnf_update]
+#   [daemon.providers.dnf.sources.update]
 #   enabled = true
-[daemon.providers.dnf_update]
-enabled = false
-
-[daemon.providers.dnf_update.sources.run]
+[daemon.providers.dnf.sources.update]
 # When `dnf makecache` last ran here. `dnf.checked` is its metadata's age.
-data = "{% if not ('dnf' | which) %}{{ _.fail('dnf is not on the PATH') }}{% endif %}{{ _.exec(['dnf', 'makecache', '--refresh'], timeout='10m') or '' }}"
+enabled = false
+data = "{{ _.exec(['dnf', 'makecache', '--refresh'], timeout='10m') or '' }}"
 result.at = "{{ _.now() }}"
 return = "{{ result | poll('24h', 1) | failback('1h', 3) }}"

@@ -354,7 +354,7 @@ pub struct ProviderRegistry {
     /// `HOME` of the variables the registry was loaded with, else this
     /// process's.
     home: crate::query::Home,
-    /// Each provider's `enabled.template`, by provider.
+    /// Each `enabled.template`, by provider, or `p.s` for a Source's.
     gates: HashMap<String, crate::provider::gate::Gate>,
     /// The last error of each check that failed, by provider: shared by the
     /// registries a switch makes, so the poll's note reaches whichever is in
@@ -508,6 +508,7 @@ impl ProviderRegistry {
             .keys()
             .filter(|(p, s)| {
                 self.is_disabled(p) != next.is_disabled(p)
+                    || self.is_source_disabled(p, s) != next.is_source_disabled(p, s)
                     || next.source(p, s).is_none()
                     || self.definition(p, s) != next.definition(p, s)
             })
@@ -850,6 +851,13 @@ impl ProviderRegistry {
     /// Sources is read, run, polled or watched, and a call to one is a miss.
     pub fn is_disabled(&self, provider: &str) -> bool {
         self.lines.is_disabled(provider)
+    }
+
+    /// Whether `provider`'s Source `source` is switched off (its own
+    /// `enabled`): it is not read, run, polled or watched, and a call to it is
+    /// a miss, as for a disabled provider. Its siblings are untouched.
+    pub fn is_source_disabled(&self, provider: &str, source: &str) -> bool {
+        self.lines.is_source_off(provider, source)
     }
 
     /// Whether `provider`'s `result` is the default merge of its Sources, under
@@ -1299,11 +1307,15 @@ impl ProviderRegistry {
         }
     }
 
-    /// Read every `enabled.template` and render each that loads, once: one
-    /// that renders false starts switched off; one that fails starts on, its
-    /// error kept for `comb check providers`.
+    /// Switch off each Source with `enabled = false`. Read every
+    /// `enabled.template` and render each that loads, once: one that renders
+    /// false starts switched off; one that fails starts on, its error kept for
+    /// `comb check providers`.
     fn load_gates(&mut self, providers: &toml::Table, errors: &mut Vec<String>) {
         use crate::provider::gate;
+        for name in gate::sources_off(providers) {
+            self.lines = Arc::new(self.lines.switched(&name, true));
+        }
         self.gates = gate::gates(providers);
         if self.gates.is_empty() {
             return;
@@ -1353,13 +1365,13 @@ impl ProviderRegistry {
         }
     }
 
-    /// Why `provider` is switched off, as `comb check providers` says it;
-    /// `None` when it is on.
+    /// Why `provider` (or `p.s`, a Source) is switched off, as `comb check
+    /// providers` says it; `None` when it is on.
     pub fn disabled_reason(&self, provider: &str) -> Option<String> {
         if !self.is_disabled(provider) {
             return None;
         }
-        if !self.lines.is_switched_off(provider) {
+        if !self.gates.contains_key(provider) {
             return Some("disabled".into());
         }
         Some(match self.gate_errors.get(provider) {

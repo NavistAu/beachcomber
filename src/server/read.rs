@@ -293,9 +293,11 @@ pub(super) async fn called_instances(
     let mut out: Vec<(String, Vec<Instance>)> = Vec::new();
     let mut memo = RootMemo::default();
     for (called_provider, source) in &called {
-        // A disabled provider has no instances: its Source is not run for a
-        // call, and the call is a miss.
-        if registry.is_disabled(called_provider) {
+        // A disabled provider or Source has no instances: the Source is not
+        // run for a call, and the call is a miss.
+        if registry.is_disabled(called_provider)
+            || registry.is_source_disabled(called_provider, source)
+        {
             continue;
         }
         let found = chain(registry, called_provider, source, dir, &mut memo).await?;
@@ -608,6 +610,14 @@ pub(super) async fn handle_get(
     // what `put` wrote: no Source has anything to run for it.
     let demanded =
         crate::query::demanded_source_names(registry, provider_name, &read_demand(&plan));
+    if force
+        && let Some(off) =
+            crate::query::only_disabled_sources(registry, provider_name, &read_demand(&plan))
+    {
+        return Response::error(format!(
+            "cannot --force disabled source {off}: no source to re-execute (enabled = false)"
+        ));
+    }
     // How long the read waits for each run it needs: its budgets
     // count from now.
     let read = Read::new(force, wait);

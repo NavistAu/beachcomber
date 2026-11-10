@@ -40,6 +40,9 @@ pub(super) async fn handle_refresh(
     if registry.is_disabled(provider_name) {
         return Response::error(format!("nothing to refresh: {provider_name} is disabled"));
     }
+    if let Some(off) = crate::query::only_disabled_sources(registry, provider_name, &plan.demand) {
+        return Response::error(format!("nothing to refresh: {off} is disabled"));
+    }
     // A cached template under the key renders afresh at its next read,
     // wherever its memos are: their hashes go. That is a refresh too.
     let memos = cache.drop_memo_hashes_under(provider_name, plan.target.rest());

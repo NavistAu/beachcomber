@@ -519,9 +519,44 @@ impl SourceDemand {
 ///
 /// `get` warms this set and `refresh` re-executes it, so the two cannot select
 /// different Sources for the same key. A disabled provider (`enabled = false`)
-/// demands none: this is where a read, a watch, a refresh and the scheduler's
-/// demand all find the Sources they act on.
+/// demands none, and a disabled Source is never demanded: this is where a
+/// read, a watch, a refresh and the scheduler's demand all find the Sources
+/// they act on.
 pub fn demanded_source_names(
+    registry: &ProviderRegistry,
+    provider: &str,
+    demand: &SourceDemand,
+) -> Vec<String> {
+    let mut names = selected_source_names(registry, provider, demand);
+    names.retain(|s| !registry.is_source_disabled(provider, s));
+    names
+}
+
+/// The Sources, as `p.s`, that alone serve `demand` and are switched off:
+/// `None` when any Source it selects is on, or none is selected. What a
+/// refresh or a `--force` of the key refuses with.
+pub fn only_disabled_sources(
+    registry: &ProviderRegistry,
+    provider: &str,
+    demand: &SourceDemand,
+) -> Option<String> {
+    let selected = selected_source_names(registry, provider, demand);
+    (!selected.is_empty()
+        && selected
+            .iter()
+            .all(|s| registry.is_source_disabled(provider, s)))
+    .then(|| {
+        selected
+            .iter()
+            .map(|s| format!("{provider}.{s}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    })
+}
+
+/// The names of `provider`'s Sources `demand` selects, disabled ones too:
+/// what tells a key only a disabled Source serves from one none does.
+pub fn selected_source_names(
     registry: &ProviderRegistry,
     provider: &str,
     demand: &SourceDemand,

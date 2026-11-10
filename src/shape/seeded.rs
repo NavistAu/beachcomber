@@ -26,7 +26,8 @@
 //! `enabled` is a table, `template` (a check, [`crate::provider::gate`]) and
 //! `poll`; on `_` only `poll`.
 //! `[daemon.providers.<p>.sources.<s>]` is fenced here too (`root`, `data`,
-//! `result`, `return`, each a jinja line); what a Source means is
+//! `result`, `return`, each a jinja line, and `enabled` as a provider's, only
+//! `enabled.poll` on a `_`); what a Source means is
 //! [`crate::shape::build`]'s, from the composed tree.
 //!
 //! `[daemon.plugin] path` is checked here too, though nothing is seeded from it:
@@ -356,23 +357,24 @@ impl Reader {
         }
     }
 
-    /// `enabled`: a bool, or a table of `template` (a string) and `poll` (whole
-    /// seconds). On `_` only `enabled.poll`: a switch there would switch every
-    /// provider.
-    fn enabled(&mut self, name: &str, value: &toml::Value) {
+    /// `enabled` at `at` (`[daemon.providers.<p>]`, or a Source's table): a
+    /// bool, or a table of `template` (a string) and `poll` (whole seconds).
+    /// On a prototype (`abstract_of` names what it stands for) only
+    /// `enabled.poll`: a switch there would switch every one.
+    fn enabled(&mut self, at: &str, abstract_of: Option<(&str, &str)>, value: &toml::Value) {
         let refuse_on_abstract = |what: &str, example: &str| {
+            let (kind, named) = abstract_of.unwrap_or_default();
             format!(
-                "[daemon.providers._] {what}: the abstract provider applies to every provider: \
-                 name the provider, [daemon.providers.<p>] {what} = {example}"
+                "{at} {what}: the abstract {kind} applies to every {kind}: name the {kind}, \
+                 {named} {what} = {example}"
             )
         };
         let Some(table) = value.as_table() else {
-            if name == "_" {
+            if abstract_of.is_some() {
                 self.err(refuse_on_abstract("enabled", "false"));
             } else if !value.is_bool() {
                 self.err(format!(
-                    "[daemon.providers.{name}] enabled must be true or false, or a table of \
-                     template and poll, not {}",
+                    "{at} enabled must be true or false, or a table of template and poll, not {}",
                     value.type_str()
                 ));
             }
@@ -380,12 +382,11 @@ impl Reader {
         };
         for (key, sub) in table {
             match key.as_str() {
-                "template" if name == "_" => {
+                "template" if abstract_of.is_some() => {
                     self.err(refuse_on_abstract("enabled.template", "\"{{ … }}\""))
                 }
                 "template" if !sub.is_str() => self.err(format!(
-                    "[daemon.providers.{name}] enabled.template must be a string (a jinja line), \
-                     not {}",
+                    "{at} enabled.template must be a string (a jinja line), not {}",
                     sub.type_str()
                 )),
                 "template" => {}
@@ -395,11 +396,12 @@ impl Reader {
                         Some(d) => whole_seconds(d).err(),
                     };
                     if let Some(why) = refused {
-                        self.err(format!("[daemon.providers.{name}] enabled.poll: {why}"));
+                        self.err(format!("{at} enabled.poll: {why}"));
                     }
                 }
                 _ => self.err(format!(
-                    "unknown key '{key}' in [daemon.providers.{name}.enabled]"
+                    "unknown key '{key}' in {}.enabled]",
+                    at.trim_end_matches(']')
                 )),
             }
         }
@@ -423,7 +425,8 @@ impl Reader {
                 continue;
             }
             if key == "enabled" {
-                self.enabled(name, sub);
+                let abstract_of = (name == "_").then_some(("provider", "[daemon.providers.<p>]"));
+                self.enabled(&format!("[daemon.providers.{name}]"), abstract_of, sub);
                 continue;
             }
             if matches!(key.as_str(), "template" | "result" | "return") {
@@ -502,13 +505,20 @@ impl Reader {
     }
 
     /// `[daemon.providers.<p>.sources.<s>]` holds `root`, `data`, `result`
-    /// (a line, or a table of field lines) and `return`; each a string.
+    /// (a line, or a table of field lines) and `return`; each a string; and
+    /// `enabled`, as a provider's ([`Self::enabled`]).
     fn source(&mut self, provider: &str, name: &str, value: &toml::Value) {
         let at = format!("[daemon.providers.{provider}.sources.{name}]");
         let Some(table) = value.as_table() else {
             return self.err(format!("{at} must be a table"));
         };
         for (key, line) in table {
+            if key == "enabled" {
+                let abstract_of =
+                    (name == "_").then_some(("Source", "[daemon.providers.<p>.sources.<s>]"));
+                self.enabled(&at, abstract_of, line);
+                continue;
+            }
             match (key.as_str(), line) {
                 ("root" | "data" | "return", toml::Value::String(_)) => {}
                 ("result", toml::Value::String(_)) => {}

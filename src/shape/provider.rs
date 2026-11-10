@@ -432,7 +432,8 @@ pub struct ProviderLines {
     /// The chains of each provider with an `enabled.template`, switched off:
     /// what it reads while [`Self::off`] names it.
     gated_off: HashMap<String, Arc<Chains>>,
-    /// The gated providers whose check last rendered false.
+    /// The gated providers whose check last rendered false, and the Sources
+    /// switched off (`p.s`: by `enabled = false`, or a check).
     off: std::collections::HashSet<String>,
     shared: Arc<Chains>,
     /// Whether any provider's lines call a Source: when none does, a read looks
@@ -610,13 +611,24 @@ impl ProviderLines {
             || self.is_switched_off(provider)
     }
 
-    /// Whether `provider`'s `enabled.template` has switched it off.
+    /// Whether `provider`'s `enabled.template` has switched it off; or, for a
+    /// `p.s`, whether the Source is switched off, by `enabled = false` or its
+    /// check.
     pub fn is_switched_off(&self, provider: &str) -> bool {
         !self.off.is_empty() && self.off.contains(provider)
     }
 
+    /// Whether `provider`'s Source `source` is switched off. The set is a
+    /// handful, so no name is built to look it up.
+    pub fn is_source_off(&self, provider: &str, source: &str) -> bool {
+        self.off
+            .iter()
+            .any(|n| n.split_once('.') == Some((provider, source)))
+    }
+
     /// These lines with `provider`, which has an `enabled.template`, switched
-    /// off or on. Everything compiled is shared, not rebuilt.
+    /// off or on; or, for a `p.s`, with that Source switched off or on.
+    /// Everything compiled is shared, not rebuilt.
     pub fn switched(&self, provider: &str, off: bool) -> Self {
         let mut set = self.off.clone();
         if off {

@@ -243,6 +243,34 @@ anything else is on.
 - On `_`, only `enabled.poll`: `enabled` and `enabled.template` there are errors. A later file's `enabled = true` or
   `false` replaces the table.
 
+#### A Source's `enabled`
+
+```toml
+[daemon.providers.brew.sources.update]
+enabled = true                       # shipped false
+
+[daemon.providers.docker.sources.compose]
+enabled.template = "{{ 'docker-compose' | which }}"
+```
+
+A Source takes `enabled` in the same shape, and switches only itself: its siblings run, poll and answer as before.
+
+| Effect | |
+|---|---|
+| its fields | a miss; the provider's other fields read as usual |
+| the Source | not run, polled, watched or kept warm; its records go when it is switched off |
+| `comb refresh` / `comb get --force` of a key only it serves | error `nothing to refresh: <p>.<s> is disabled` / `cannot --force disabled source <p>.<s>` |
+| `comb refresh <p>` | refreshes the Sources that are on |
+| a call of it from another line | `none`; not a load error |
+| `comb check providers` | its row in `sources` has `"disabled": true` and the reason as its `invalidation` |
+
+- `enabled.template` is a check as above, rendered, polled and refused alike; in it `_.name` is the Source's name.
+- `enabled.poll` is the Source's own, else its prototypes' (`<p>.sources._`, then `_.sources._`), else
+  `[daemon.providers._] enabled.poll`, else `30s`.
+- On a prototype (`sources._`), only `enabled.poll`: `enabled` and `enabled.template` there are errors.
+- A provider whose every Source is off is a provider with no Source answering: a read is a miss, and `comb refresh <p>`
+  is an error naming them.
+
 ## `[daemon.providers.<p>.sources.<s>]`
 
 A Source. `<s>` is a name, or `_` for a **prototype**: `[daemon.providers.<p>.sources._]` gives defaults to every Source
@@ -254,6 +282,7 @@ of `<p>`, and `[daemon.providers._.sources._]` to every Source of every provider
 | `data` | jinja line | yes | `env`, `comb`, `sources`, `daemon`, `_`, and any provider by name | The body, run in the daemon with the root as working directory. Can call every engine function, `exec`, `url` and `plugin` included (so can `root` and `result`; put the work here so it runs once and every `result` shares it) |
 | `result` | jinja line, or a table of them | yes | `data`, `_` | `result = "{{ data }}"` makes the whole value the provider's node; `result.<field> = "…"` declares fields one by one |
 | `return` | jinja line | no | `result`, `_` | The schedule: `result` piped through [decorators](#return-decorators) |
+| `enabled` | bool, or a table of `template` and `poll` | no (`true`) | `env`, `_` | `false` switches the Source off; `enabled.template` switches it by a polled check ([A Source's `enabled`](#a-sources-enabled)). On `_` only `enabled.poll` |
 
 - Every line of a Source can call the engine's functions whatever its Sees column lists; that column is the names it
   reads. In a Source's lines `_.name` is the Source's name.

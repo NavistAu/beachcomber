@@ -2389,3 +2389,136 @@ fn a_failing_enabled_template_leaves_the_provider_on_and_says_why() {
         "{verdicts}"
     );
 }
+
+/// `p`'s row of `introspect providers`: its Source `source`.
+fn source_row(d: &TestDaemon, provider: &str, source: &str) -> Value {
+    provider_row(d, provider).0["sources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["name"] == source)
+        .unwrap_or_else(|| panic!("{provider}.{source} listed"))
+        .clone()
+}
+
+#[test]
+fn a_sources_enabled_template_switches_it_alone_off_and_on_by_its_poll() {
+    let setup = Setup::new(&[]);
+    let flag = setup.home.join("flag");
+    let gated_count = setup.home.join("gated.count");
+    let sibling_count = setup.home.join("sibling.count");
+    setup.write(
+        "config.toml",
+        &format!(
+            r#"
+[daemon.providers.p.sources.gated]
+enabled.template = "{{{{ '{flag}' | read }}}}"
+enabled.poll = "1s"
+{}
+[daemon.providers.p.sources.sibling]
+{}"#,
+            tally_source(&gated_count),
+            tally_source(&sibling_count).replace("result.v", "result.w"),
+            flag = flag.display(),
+        ),
+    );
+    let d = setup.daemon();
+
+    assert_eq!(get(&d, "p"), Some(json!({"w": "1"})), "off from the load");
+    let row = source_row(&d, "p", "gated");
+    assert_eq!(
+        row["invalidation"],
+        json!("disabled (enabled.template rendered false)"),
+        "{row}"
+    );
+    assert_eq!(source_row(&d, "p", "sibling")["disabled"], json!(false));
+    assert_eq!(provider_row(&d, "p").0["disabled"], json!(false));
+
+    std::fs::write(&flag, "on").unwrap();
+    poll_until(
+        "the gated Source",
+        "switched on by its poll",
+        Duration::from_secs(10),
+        Duration::from_millis(50),
+        || get(&d, "p.v"),
+        |v| *v == Some(json!("1")),
+    );
+    std::fs::remove_file(&flag).unwrap();
+    poll_until(
+        "the gated Source",
+        "switched off by its poll",
+        Duration::from_secs(10),
+        Duration::from_millis(50),
+        || get(&d, "p.v"),
+        Option::is_none,
+    );
+    assert_eq!(get(&d, "p"), Some(json!({"w": "1"})));
+    assert_eq!(
+        runs(&sibling_count),
+        1,
+        "the switches did not disturb its sibling"
+    );
+}
+
+#[test]
+fn a_disabled_source_refuses_refresh_and_force_and_a_call_of_it_is_a_miss() {
+    let setup = Setup::new(&[]);
+    let off_count = setup.home.join("off.count");
+    let on_count = setup.home.join("on.count");
+    setup.write(
+        "config.toml",
+        &format!(
+            r#"
+[daemon.providers.p.sources.off]
+enabled = false
+{}
+[daemon.providers.p.sources.on]
+{}
+[daemon.providers.q.sources.off]
+enabled = false
+{}
+[daemon.providers.caller]
+return = "{{{{ result | merge(daemon.providers.p.sources.off()) }}}}"
+
+[daemon.providers.caller.sources.own]
+data = "{{{{ 2 }}}}"
+result.mine = "{{{{ data }}}}"
+"#,
+            tally_source(&off_count),
+            tally_source(&on_count).replace("result.v", "result.w"),
+            tally_source(&off_count),
+        ),
+    );
+    let d = setup.daemon();
+    let (ok, err) = comb_status(&d, &["refresh", "p.v"]);
+    assert!(
+        !ok && err.contains("nothing to refresh: p.off is disabled"),
+        "{err}"
+    );
+    let (ok, err) = comb_status(&d, &["get", "--force", "p.v"]);
+    assert!(
+        !ok && err.contains("cannot --force disabled source p.off"),
+        "{err}"
+    );
+    let (ok, err) = comb_status(&d, &["refresh", "p"]);
+    assert!(ok, "its sibling refreshes: {err}");
+    assert_eq!(get(&d, "p"), Some(json!({"w": "1"})));
+    assert_eq!(
+        get(&d, "caller"),
+        Some(json!({"mine": 2})),
+        "the call is none"
+    );
+    assert_eq!(
+        source_row(&d, "p", "off")["invalidation"],
+        json!("disabled")
+    );
+
+    // Every Source off: a provider with no Source answering.
+    assert_eq!(get(&d, "q"), None);
+    let (ok, err) = comb_status(&d, &["refresh", "q"]);
+    assert!(
+        !ok && err.contains("nothing to refresh: q.off is disabled"),
+        "{err}"
+    );
+    assert_eq!(runs(&off_count), 0);
+}

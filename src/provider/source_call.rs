@@ -184,8 +184,8 @@ pub fn source_call(
             "sources: {provider}.{source}: no such source"
         )));
     }
-    // A disabled provider produces nothing: a miss.
-    if registry.is_disabled(provider) {
+    // A disabled provider or Source produces nothing: a miss.
+    if registry.is_disabled(provider) || registry.is_source_disabled(provider, source) {
         return Ok(None);
     }
     let entry = Dir::named(entry, registry.home());
@@ -255,7 +255,7 @@ fn warm_chain(
     entry: Option<&str>,
     arrived: tokio::time::Instant,
 ) -> Result<Vec<Dir>, Unwarmed> {
-    if registry.is_disabled(provider) {
+    if registry.is_disabled(provider) || registry.is_source_disabled(provider, source) {
         note_call(provider, source, &[]);
         return Ok(Vec::new());
     }
@@ -426,6 +426,7 @@ pub fn warm_provider(
         .provider_sources(provider)
         .unwrap_or_default()
         .iter()
+        .filter(|s| !registry.is_source_disabled(provider, &s.name))
         .map(|s| (provider.to_string(), s.name.clone()));
     let called = registry.lines().all_calls(provider).iter().cloned();
     // One instant for every Source: a barrier passed for one serves the rest.
