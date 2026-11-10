@@ -26,7 +26,7 @@ use crate::library::memo::{MemoHit, hit_in};
 use crate::virtual_fields::{Ref, refs_from_names};
 use minijinja::Environment;
 use minijinja::value::{Serde, Value as MjValue};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 // ── Forms ─────────────────────────────────────────────────────────────────────
 
@@ -626,8 +626,34 @@ pub fn undeclared_names(
         .collect())
 }
 
-/// What [`undeclared_names`] reads, globals and all.
+/// What [`undeclared_names`] reads, globals and all. A load asks it of
+/// each line several times over (its lint, its bare calls, what it reads of
+/// a template, the Source's own reads), each a compile; what a text reads
+/// is its syntax alone, the same in every environment here, so the answer
+/// is kept per text.
 fn read_names(
+    env: &Environment<'_>,
+    src: &str,
+    nested: bool,
+) -> Result<std::collections::BTreeSet<String>, String> {
+    type Kept = HashMap<(String, bool), Result<std::collections::BTreeSet<String>, String>>;
+    static KEPT: std::sync::LazyLock<std::sync::Mutex<Kept>> =
+        std::sync::LazyLock::new(Default::default);
+    let key = (src.to_string(), nested);
+    if let Some(found) = KEPT.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
+        return found.clone();
+    }
+    let found = compiled_names(env, src, nested);
+    let mut kept = KEPT.lock().unwrap_or_else(|e| e.into_inner());
+    // A bound on what a long-running daemon keeps of texts it was asked.
+    if kept.len() >= 4096 {
+        kept.clear();
+    }
+    kept.insert(key, found.clone());
+    found
+}
+
+fn compiled_names(
     env: &Environment<'_>,
     src: &str,
     nested: bool,
