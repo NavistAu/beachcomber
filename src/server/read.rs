@@ -10,6 +10,7 @@ use crate::provider::source_call::instance_key;
 use crate::query::{Ask, Dir, Found, Instance, InstanceWalk, Key, QueryPlan};
 use crate::run::{Outcome, Want};
 use crate::scheduler::SchedulerMessage;
+use libbeachcomber::protocol::{Level, LogLine};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -552,6 +553,7 @@ pub(super) async fn handle_get(
     path: Option<&str>,
     force: bool,
     wait: Wait,
+    log: Option<Level>,
 ) -> Response {
     let (cache, scheduler) = (&ctx.cache, &ctx.scheduler);
     // One source-aware plan drives the whole request: provider, resolved
@@ -621,6 +623,9 @@ pub(super) async fn handle_get(
     // How long the read waits for each run it needs: its budgets
     // count from now.
     let read = Read::new(force, wait);
+    if log == Some(Level::Debug) {
+        registry.logs.want_debug(provider_name);
+    }
 
     // The instance chains, climbed together nearest first ([`climb`]):
     // each instance is brought up to date and the merged read asked for
@@ -679,6 +684,19 @@ pub(super) async fn handle_get(
     // Demand every instance the read reached, so each is kept warm and,
     // the first time, its schedule is registered. The Sources the
     // lines call are kept warm the same way, while they are called.
+    // The instances whose lines a read that asks for its log is told.
+    let logged: Vec<(String, Instance)> = match log {
+        None => Vec::new(),
+        Some(_) => reached
+            .iter()
+            .map(|i| (provider_name.to_string(), i.clone()))
+            .chain(
+                called
+                    .iter()
+                    .flat_map(|(p, is)| is.iter().map(move |i| (p.clone(), i.clone()))),
+            )
+            .collect(),
+    };
     for (called_provider, instances) in called {
         scheduler
             .send(SchedulerMessage::QueryActivity {
@@ -718,7 +736,58 @@ pub(super) async fn handle_get(
             "cannot --force static namespace '{provider_name}': no source to re-execute from"
         ));
     }
-    resolve_halves(&merged, &plan.target, half)
+    let mut response = resolve_halves(&merged, &plan.target, half);
+    if let Some(level) = log {
+        response.log = read_log(registry, &logged, level);
+    }
+    response
+}
+
+/// The lines behind a read of `instances`, at `level` and above: each
+/// instance's latest stored run's, then its failure, if it is failing: an
+/// `error` (the last good value stands), or a `fatal` that stopped it.
+fn read_log(
+    registry: &ProviderRegistry,
+    instances: &[(String, Instance)],
+    level: Level,
+) -> Vec<LogLine> {
+    let mut log = Vec::new();
+    for (provider, instance) in instances {
+        let key = instance_key(provider, &instance.source, instance.root.address());
+        let origin = format!("source({})", instance.source);
+        let mut lines = registry.logs.of(&key);
+        let failure = registry
+            .failures
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(&key)
+            .and_then(|state| state.snapshot());
+        if let Some(failure) = failure {
+            let msg = failure.last_error.unwrap_or_default();
+            let n = u64::from(failure.consecutive_failures);
+            let mut line = if failure.stopped {
+                LogLine::new(
+                    Level::Fatal,
+                    &origin,
+                    format!(
+                        "{msg}: stopped, until an input its run read changes, the configuration \
+                         reloads, or a refresh"
+                    ),
+                )
+            } else {
+                LogLine::new(Level::Error, &origin, msg)
+            };
+            line.count = (n > 1).then_some(n);
+            lines.push(line);
+        }
+        let path = instance.root.address().map(str::to_string);
+        for line in &mut lines {
+            line.path.clone_from(&path);
+        }
+        lines.retain(|line| line.level >= level);
+        libbeachcomber::library::log::merge(&mut log, lines);
+    }
+    log
 }
 
 #[cfg(test)]

@@ -572,7 +572,7 @@ impl Client {
         force: bool,
         wait: Wait,
     ) -> Result<resolve::Got, CombError> {
-        self.call(&get_request(key, path, force, wait)?)
+        self.call(&get_request(key, path, force, wait, None)?)
             .map(parse_node)
     }
 
@@ -745,7 +745,7 @@ impl resolve::Fetch for Session {
         wait: Wait,
     ) -> Result<Option<resolve::Got>, resolve::FetchError> {
         fetched(
-            get_request(key, path, force, wait)
+            get_request(key, path, force, wait, self.log)
                 .and_then(|request| self.call(&request))
                 .map(parse_node),
         )
@@ -862,6 +862,8 @@ pub struct Session {
     context: Option<String>,
     /// Whether templates this session resolves may call `_.exec()`.
     allow_exec: bool,
+    /// The least level of log line each `get` asks for ([`Session::set_log`]).
+    log: Option<protocol::Level>,
 }
 
 impl Session {
@@ -872,7 +874,15 @@ impl Session {
             skew_checked: false,
             version_mismatch: None,
             context: None,
+            log: None,
         }
+    }
+
+    /// Ask every later `get` on this session for the log lines behind its
+    /// answer, at `level` and above ([`resolve::Got::log`]); `None`, the
+    /// default, asks for none.
+    pub fn set_log(&mut self, level: Option<protocol::Level>) {
+        self.log = level;
     }
 
     /// Version skew detected against the daemon on this session's
@@ -998,12 +1008,14 @@ fn get_request(
     path: Option<&str>,
     force: bool,
     wait: Wait,
+    log: Option<protocol::Level>,
 ) -> Result<Request, CombError> {
     Ok(Request::Get {
         key: key.to_string(),
         path: wire_path(path)?,
         force,
         wait,
+        log,
     })
 }
 
@@ -1138,6 +1150,7 @@ fn parse_node(resp: Response) -> resolve::Got {
         age_ms: resp.age_ms,
         var: resp.var,
         var_memo: resp.var_memo,
+        log: resp.log,
     }
 }
 

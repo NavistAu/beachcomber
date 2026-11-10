@@ -376,7 +376,7 @@ impl FailureState {
     }
 
     /// The streak as `status` shows it; `None` once a success ended it.
-    fn snapshot(&self) -> Option<FailureSnapshot> {
+    pub(crate) fn snapshot(&self) -> Option<FailureSnapshot> {
         (self.consecutive_failures > 0).then(|| FailureSnapshot {
             consecutive_failures: self.consecutive_failures,
             suppressed_until_unix_ms: self.suppressed_until.map(instant_to_unix_ms),
@@ -1885,6 +1885,7 @@ fn evict(cache: &Cache, key: &lifecycle::Key) {
 /// what it was known to call.
 fn on_evicted(cache: &Cache, registry: &ProviderRegistry, key: &lifecycle::Key) {
     evict(cache, key);
+    registry.logs.forget(key);
     registry.forget_roots(&key.provider, key.source.name(), key.path.as_deref());
     registry.forget_callees(&key.provider, key.source.name(), key.path.as_deref());
 }
@@ -2815,6 +2816,37 @@ mod tests {
         );
         on_evicted(&cache, &registry, &keys[1]);
         assert!(registry.callers_of().is_empty());
+    }
+
+    /// The lines an instance's run raised go when it is evicted; another
+    /// instance's stay.
+    #[test]
+    fn an_evicted_instance_forgets_its_lines() {
+        let config = crate::config::Config::from_toml(
+            "[daemon.providers.p.sources.a]\ndata = \"1\"\nresult.v = \"{{ data }}\"\n",
+        );
+        let cache = Arc::new(Cache::new());
+        let registry = ProviderRegistry::with_config(&config, &std::env::vars().collect())
+            .unwrap()
+            .share(&cache);
+        let key = |path: &str| lifecycle::Key {
+            provider: "p".into(),
+            path: Some(path.into()),
+            source: crate::cache::Origin::source("a"),
+            node: String::new(),
+        };
+        let line = || {
+            vec![libbeachcomber::protocol::LogLine::new(
+                libbeachcomber::protocol::Level::Warn,
+                "source(a)",
+                "careful",
+            )]
+        };
+        registry.logs.store(&key("/one"), line());
+        registry.logs.store(&key("/two"), line());
+        on_evicted(&cache, &registry, &key("/one"));
+        assert!(registry.logs.of(&key("/one")).is_empty());
+        assert_eq!(registry.logs.of(&key("/two")), line());
     }
 
     fn source(name: &str, poll: &str, data: u32) -> String {

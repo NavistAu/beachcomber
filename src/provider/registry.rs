@@ -315,6 +315,9 @@ pub struct ProviderRegistry {
     /// records here, whoever started it, so an instance in backoff is skipped
     /// by all of them.
     pub(crate) failures: crate::scheduler::SourceFailureMap,
+    /// The lines each instance's latest run raised, carried over a reload
+    /// as the failures are.
+    pub(crate) logs: Arc<crate::run::RunLogs>,
     /// What every config Source reads `comb.<p>` through.
     reader: Arc<RegistryReader>,
     /// Every provider's `template`, `result` and `return` lines, compiled.
@@ -400,6 +403,7 @@ impl ProviderRegistry {
             roots: DashMap::new(),
             root_errors: DashMap::new(),
             failures: Arc::default(),
+            logs: Arc::default(),
             reader: Arc::new(RegistryReader::default()),
             lines: Arc::new(
                 ProviderLines::new(&toml::Table::new())
@@ -1416,6 +1420,7 @@ impl ProviderRegistry {
             roots,
             root_errors: self.root_errors.clone(),
             failures: Arc::clone(&self.failures),
+            logs: Arc::clone(&self.logs),
             reader: Arc::new(RegistryReader::default()),
             lines: Arc::new(self.lines.switched(provider, !on)),
             config_sources: self.config_sources.clone(),
@@ -1494,6 +1499,7 @@ impl ProviderRegistry {
             mine.adopt_loaded(theirs);
         }
         self.failures = Arc::clone(&previous.failures);
+        self.logs = Arc::clone(&previous.logs);
         // A run under way at a reload is the one a caller on this registry
         // finds, as one on the last would.
         self.runs = Arc::clone(&previous.runs);

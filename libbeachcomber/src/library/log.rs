@@ -6,8 +6,10 @@
 //! path a failed `_.exec()` takes. `_.fail(msg)` is `_.log.error(msg)`.
 
 use crate::engine::{ctx, op_error};
+use crate::protocol::{Level as Wire, LogLine};
 use minijinja::value::{Object, Value as MjValue};
 use minijinja::{Environment, Error, State};
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Mutex};
 
@@ -58,6 +60,174 @@ fn emit(level: Level, origin: Option<&str>, msg: &str) {
     }
 }
 
+impl Level {
+    fn wire(self) -> Wire {
+        match self {
+            Level::Debug => Wire::Debug,
+            Level::Info => Wire::Info,
+            Level::Warn => Wire::Warn,
+        }
+    }
+}
+
+/// The most lines a log keeps ([`merge`]); one more says how many it left out.
+pub const MAX_LINES: usize = 16;
+/// The most bytes of one line's text a log keeps, as an `exec`'s stderr tail.
+pub const MAX_BYTES: usize = 512;
+/// The text of the line that counts the lines a full log left out.
+pub const MORE: &str = "… more lines";
+
+/// The lines this thread is collecting ([`capture`]): the least level kept,
+/// the origin each is given, whether each is given the leaf its render is
+/// for (a client's), and the lines so far.
+struct Capture {
+    min: Wire,
+    origin: String,
+    keyed: bool,
+    lines: Vec<LogLine>,
+}
+
+thread_local! {
+    static CAPTURE: RefCell<Option<Capture>> = const { RefCell::new(None) };
+}
+
+/// Run `f`, collecting the lines at `min` and above that it raises on this
+/// thread ([`raise`], and every `_.log.debug/info/warn`), each given `origin`
+/// and, when `keyed`, the leaf the render in progress is for (its context's
+/// origin). A capture inside another has the thread to itself until it ends.
+pub fn capture<T>(
+    min: Wire,
+    origin: &str,
+    keyed: bool,
+    f: impl FnOnce() -> T,
+) -> (T, Vec<LogLine>) {
+    /// Puts the outer capture back should `f` panic.
+    struct Restore(Option<Option<Capture>>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            if let Some(outer) = self.0.take() {
+                CAPTURE.with(|c| c.replace(outer));
+            }
+        }
+    }
+    let outer = CAPTURE.with(|c| {
+        c.replace(Some(Capture {
+            min,
+            origin: origin.to_string(),
+            keyed,
+            lines: Vec::new(),
+        }))
+    });
+    let mut restore = Restore(Some(outer));
+    let out = f();
+    let outer = restore.0.take().flatten();
+    let lines = CAPTURE
+        .with(|c| c.replace(outer))
+        .map(|c| c.lines)
+        .unwrap_or_default();
+    (out, lines)
+}
+
+/// The least level the capture on this thread keeps, its origin and whether
+/// it is keyed; `None` with no capture. What a render handed to another
+/// thread captures there with ([`capture`]), to [`extend`] this one after.
+pub fn capturing() -> Option<(Wire, String, bool)> {
+    CAPTURE.with(|c| {
+        c.borrow()
+            .as_ref()
+            .map(|cap| (cap.min, cap.origin.clone(), cap.keyed))
+    })
+}
+
+/// Whether the capture on this thread keeps a line at `level`: what a line
+/// costly to word is asked before it is worded.
+pub fn wanted(level: Wire) -> bool {
+    CAPTURE.with(|c| c.borrow().as_ref().is_some_and(|cap| level >= cap.min))
+}
+
+/// Add `lines`, made elsewhere, to the capture on this thread, those at its
+/// level and above.
+pub fn extend(lines: Vec<LogLine>) {
+    CAPTURE.with(|c| {
+        if let Some(cap) = c.borrow_mut().as_mut() {
+            for line in lines.into_iter().filter(|l| l.level >= cap.min) {
+                push(&mut cap.lines, line);
+            }
+        }
+    });
+}
+
+/// A line at `level` for the capture on this thread, if any wants it.
+pub fn raise(level: Wire, msg: &str) {
+    raise_at(level, None, None, msg);
+}
+
+/// [`raise`], from `origin` rather than the capture's, about the leaf `key`
+/// rather than the one the render in progress is for.
+pub fn raise_at(level: Wire, origin: Option<&str>, key: Option<&str>, msg: &str) {
+    CAPTURE.with(|c| {
+        if let Some(cap) = c.borrow_mut().as_mut()
+            && level >= cap.min
+        {
+            let key = match key {
+                Some(key) => Some(key.to_string()),
+                None if cap.keyed => ctx().origin(),
+                None => None,
+            };
+            let mut line = LogLine::new(level, origin.unwrap_or(&cap.origin), msg);
+            line.key = key;
+            push(&mut cap.lines, line);
+        }
+    });
+}
+
+/// Add `lines` to `log`, within its bounds: a line already there (same level,
+/// text, origin, path and key) is counted, not repeated; a text is cut to [`MAX_BYTES`];
+/// past [`MAX_LINES`] one line, [`MORE`], counts the rest at the highest
+/// level among them.
+pub fn merge(log: &mut Vec<LogLine>, lines: Vec<LogLine>) {
+    for line in lines {
+        push(log, line);
+    }
+}
+
+fn push(log: &mut Vec<LogLine>, mut line: LogLine) {
+    if line.msg.len() > MAX_BYTES {
+        let mut end = MAX_BYTES;
+        while !line.msg.is_char_boundary(end) {
+            end -= 1;
+        }
+        line.msg.truncate(end);
+        line.msg.push('…');
+    }
+    let n = line.count.unwrap_or(1);
+    if let Some(same) = log.iter_mut().find(|l| {
+        l.level == line.level
+            && l.msg == line.msg
+            && l.origin == line.origin
+            && l.path == line.path
+            && l.key == line.key
+    }) {
+        same.count = Some(same.count.unwrap_or(1) + n);
+        return;
+    }
+    if log.len() < MAX_LINES {
+        log.push(line);
+        return;
+    }
+    match log.get_mut(MAX_LINES) {
+        Some(more) => {
+            more.count = Some(more.count.unwrap_or(1) + n);
+            more.level = more.level.max(line.level);
+        }
+        None => log.push(LogLine {
+            msg: MORE.to_string(),
+            count: Some(n),
+            ..line
+        }),
+    }
+}
+
 /// Per origin, the last line logged and how many times it came again.
 static LAST: LazyLock<Mutex<HashMap<String, Last>>> = LazyLock::new(Mutex::default);
 
@@ -67,6 +237,7 @@ type Last = (Level, String, u64);
 /// Log `msg`, once while an origin repeats it: a repeat is counted, and the
 /// count is logged when a different line follows. No origin, no counting.
 fn write(level: Level, msg: &str) {
+    raise(level.wire(), msg);
     let ctx = ctx();
     let origin = ctx.origin();
     let Some(key) = origin.as_deref() else {
@@ -257,5 +428,43 @@ mod tests {
     #[test]
     fn no_origin_is_not_deduplicated() {
         assert_eq!(run(None, &["_.log.warn('z')", "_.log.warn('z')"]).len(), 2);
+    }
+
+    fn line(level: Wire, msg: &str) -> LogLine {
+        LogLine::new(level, "o", msg)
+    }
+
+    #[test]
+    fn a_capture_keeps_its_levels_and_gives_the_thread_back() {
+        let ((), outer) = capture(Wire::Info, "outer", false, || {
+            raise(Wire::Debug, "dropped");
+            raise(Wire::Info, "a");
+            let ((), inner) = capture(Wire::Debug, "inner", false, || raise(Wire::Debug, "d"));
+            assert_eq!(inner.len(), 1);
+            assert_eq!(inner[0].origin, "inner");
+            raise(Wire::Warn, "a");
+        });
+        let shown: Vec<_> = outer.iter().map(|l| (l.level, l.msg.as_str())).collect();
+        assert_eq!(shown, [(Wire::Info, "a"), (Wire::Warn, "a")]);
+        raise(Wire::Warn, "nobody listens");
+    }
+
+    #[test]
+    fn a_log_counts_repeats_cuts_long_lines_and_stops_at_its_bound() {
+        let mut log = Vec::new();
+        merge(&mut log, vec![line(Wire::Warn, "x"), line(Wire::Warn, "x")]);
+        assert_eq!(log.len(), 1);
+        assert_eq!(log[0].count, Some(2));
+        merge(&mut log, vec![line(Wire::Info, &"é".repeat(MAX_BYTES))]);
+        assert!(log[1].msg.len() <= MAX_BYTES + '…'.len_utf8());
+        let many = (0..20).map(|i| line(Wire::Info, &i.to_string())).collect();
+        merge(&mut log, many);
+        merge(&mut log, vec![line(Wire::Error, "late")]);
+        assert_eq!(log.len(), MAX_LINES + 1);
+        let more = &log[MAX_LINES];
+        assert_eq!(
+            (more.msg.as_str(), more.count, more.level),
+            (MORE, Some(7), Wire::Error)
+        );
     }
 }

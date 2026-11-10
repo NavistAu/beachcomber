@@ -31,6 +31,7 @@ use crate::provider::source_call::{in_failback_backoff, ran};
 use crate::provider::{Source, SourceResult};
 use crate::scheduler::lifecycle::Key;
 use libbeachcomber::fs::Touched;
+use libbeachcomber::protocol::{Level, LogLine};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -42,7 +43,75 @@ use tracing::{debug, warn};
 /// whether it was a fault in the lines (a Source it calls failed, or it
 /// called itself), and whether it was a `log.fatal`, with the inputs the
 /// failed run read (what re-arms the stopped instance when one changes).
-type Ran = Result<(SourceResult, Option<Validity>), Failure>;
+type Ran = Result<(SourceResult, Option<Validity>, Vec<LogLine>), Failure>;
+
+/// The lines each instance's latest stored run raised (`_.log.*`), what a
+/// `get` that asks for its log is told beside the value; and when a read last
+/// asked for each provider's `debug` lines, whose runs keep them too while
+/// that is within [`DEBUG_WINDOW`]. An instance whose run raised nothing has
+/// no entry, and an evicted one loses its entry ([`RunLogs::forget`]).
+#[derive(Default)]
+pub struct RunLogs {
+    lines: Mutex<HashMap<Key, Vec<LogLine>>>,
+    debug: Mutex<HashMap<String, tokio::time::Instant>>,
+}
+
+/// How long after a read asked for a provider's `debug` lines its runs keep
+/// them: an instance's default Active window (60 s × 12), the life a record
+/// a reader keeps asking about has.
+pub const DEBUG_WINDOW: std::time::Duration = std::time::Duration::from_secs(
+    crate::scheduler::lifecycle::DEFAULT_POLL_INTERVAL_SECS
+        * crate::scheduler::lifecycle::DEFAULT_POLL_COUNT as u64,
+);
+
+impl RunLogs {
+    /// The least level a run of `provider` keeps: `debug` while a read asked
+    /// for it within [`DEBUG_WINDOW`], else `info`. A lapsed ask is dropped.
+    fn min_level(&self, provider: &str) -> Level {
+        let mut debug = lock(&self.debug);
+        match debug.get(provider) {
+            Some(asked) if asked.elapsed() < DEBUG_WINDOW => Level::Debug,
+            Some(_) => {
+                debug.remove(provider);
+                Level::Info
+            }
+            None => Level::Info,
+        }
+    }
+
+    /// A read asked for `provider`'s `debug` lines, now.
+    pub fn want_debug(&self, provider: &str) {
+        let now = tokio::time::Instant::now();
+        let mut debug = lock(&self.debug);
+        match debug.get_mut(provider) {
+            Some(asked) => *asked = now,
+            None => {
+                debug.insert(provider.to_string(), now);
+            }
+        }
+    }
+
+    /// The lines of `key`'s latest stored run.
+    pub fn of(&self, key: &Key) -> Vec<LogLine> {
+        lock(&self.lines).get(key).cloned().unwrap_or_default()
+    }
+
+    pub(crate) fn store(&self, key: &Key, lines: Vec<LogLine>) {
+        let mut all = lock(&self.lines);
+        if lines.is_empty() {
+            if !all.is_empty() {
+                all.remove(key);
+            }
+        } else {
+            all.insert(key.clone(), lines);
+        }
+    }
+
+    /// `key` was evicted: its lines go with its record.
+    pub(crate) fn forget(&self, key: &Key) {
+        self.store(key, Vec::new());
+    }
+}
 
 struct Failure {
     message: String,
@@ -601,6 +670,8 @@ impl Runs {
             // Source's `comb.<p>` reader holds only weakly: kept here, a
             // reload mid-run cannot leave it reading a registry that has gone.
             let keep = Arc::clone(&settle.registry);
+            let min = keep.logs.min_level(&settle.key.provider);
+            let origin = format!("source({})", settle.key.source.name());
             let stamped = Arc::clone(&settle.state.stamped);
             let (tree_cache, tree_key) = (Arc::clone(&settle.cache), settle.key.clone());
             let ran = tokio::time::timeout(
@@ -630,7 +701,10 @@ impl Runs {
                         },
                     );
                     let _ = stamped.set(Validity::of(declared.clone()));
-                    let (result, failed_call, fatal) = ran(|| source.execute(dir.as_deref()));
+                    let ((result, failed_call, fatal), lines) =
+                        libbeachcomber::library::log::capture(min, &origin, false, || {
+                            ran(|| source.execute(dir.as_deref()))
+                        });
                     let read = reads.touches();
                     let validity = if read.is_empty() {
                         stamped.get().cloned().flatten()
@@ -638,7 +712,7 @@ impl Runs {
                         Validity::of(declared.and_read(read))
                     };
                     match result {
-                        Ok(result) => Ok((result, validity)),
+                        Ok(result) => Ok((result, validity, lines)),
                         Err(message) => Err(Failure {
                             message,
                             fault: failed_call.is_some(),
@@ -810,7 +884,8 @@ fn record(registry: &ProviderRegistry, cache: &Cache, key: &Key, result: Ran) ->
     let meta = source.metadata();
     registry
         .unless_retired(provider, source_name, || match result {
-            Ok((result, validity)) => {
+            Ok((result, validity, lines)) => {
+                registry.logs.store(key, lines);
                 // A success ends a streak of failures; an instance that never
                 // failed has no state to end (the common run).
                 let mut failures = lock(&registry.failures);

@@ -70,6 +70,9 @@ pub struct Got {
     pub memo: Option<JsonValue>,
     /// Age of `data`, present only with it.
     pub age_ms: Option<u128>,
+    /// The log lines behind the node ([`crate::protocol::Response::log`]),
+    /// sent only when the request asked for them.
+    pub log: Vec<crate::protocol::LogLine>,
     /// The provider's vars, by name, sent beside a template half when it has
     /// any ([`crate::protocol::Response::var`]).
     pub var: Option<JsonValue>,
@@ -296,6 +299,10 @@ pub struct Traced {
     pub memos: Vec<MemoWrite>,
     /// Whether the addressed leaf was served from its memo.
     pub memo_hit: bool,
+    /// The log lines behind the value ([`resolve_logged`]): the daemon's for
+    /// each node it fetched, then the ones its renders raised here. Empty
+    /// unless asked for.
+    pub log: Vec<crate::protocol::LogLine>,
 }
 
 /// [`resolve`], traced, with its memos left for the caller to write back
@@ -305,14 +312,33 @@ pub fn resolve_traced(
     inputs: &Inputs<'_>,
     fetch: &mut dyn Fetch,
 ) -> Result<Traced, ResolveError> {
+    resolve_logged(key, inputs, fetch, None)
+}
+
+/// [`resolve_traced`], with the log lines at `level` and above that its
+/// renders raise here in [`Traced::log`], after the ones the daemon sent
+/// with each node (which a [`Fetch`] asks for on its own: a `Session`'s
+/// [`set_log`](crate::Session::set_log)). `None` collects nothing.
+pub fn resolve_logged(
+    key: &str,
+    inputs: &Inputs<'_>,
+    fetch: &mut dyn Fetch,
+    level: Option<crate::protocol::Level>,
+) -> Result<Traced, ResolveError> {
     let mut r = Resolver::new(inputs, fetch);
-    let value = r.resolve(key)?;
+    let (value, rendered) = match level {
+        Some(level) => crate::library::log::capture(level, "template", true, || r.resolve(key)),
+        None => (r.resolve(key), Vec::new()),
+    };
+    let value = value?;
+    crate::library::log::merge(&mut r.log, rendered);
     Ok(Traced {
         value,
         deps: r.order,
         oldest_input_ms: r.oldest,
         memos: r.memos,
         memo_hit: r.memo_hit,
+        log: r.log,
     })
 }
 
@@ -426,6 +452,8 @@ struct Resolver<'a> {
     /// What each var resolved to so far, by its `(p.var.<name>, path)`: as
     /// [`Self::resolved`] is for a node.
     vars: HashMap<Coord, Result<Option<JsonValue>, String>>,
+    /// The log lines the daemon sent with the nodes fetched so far.
+    log: Vec<crate::protocol::LogLine>,
 }
 
 impl<'a> Resolver<'a> {
@@ -448,6 +476,7 @@ impl<'a> Resolver<'a> {
             memo_hit: false,
             var_tables: HashMap::new(),
             vars: HashMap::new(),
+            log: Vec::new(),
         }
     }
 
@@ -629,6 +658,12 @@ impl<'a> Resolver<'a> {
                 .fetch
                 .get(key, coord.1.as_deref(), self.inputs.force, self.inputs.wait)
             {
+                // Its lines are the resolution's, once: a node fetched again
+                // is answered from the memo, without them.
+                Ok(Some(mut got)) if !got.log.is_empty() => {
+                    crate::library::log::merge(&mut self.log, std::mem::take(&mut got.log));
+                    Ok((got != Got::default()).then_some(got))
+                }
                 Ok(got) => Ok(got),
                 Err(FetchError::Rejected(m)) => Err(m),
                 Err(e @ FetchError::Transport(_)) => return Err(ResolveError::Fetch(e)),
@@ -859,18 +894,27 @@ impl<'a> Resolver<'a> {
         let keep = ctx.clone();
 
         let previous = keep.set_origin(Some(key.to_string()));
+        // The lines the render raises on its thread are this one's capture's.
+        let capturing = crate::library::log::capturing();
         let out = std::thread::scope(|scope| {
             let render = scope.spawn(move || {
-                let out = with_ctx(ctx, || evaluate_node(jinja.env(), src, key, context));
-                (out, bridge.take_error())
+                let render = || with_ctx(ctx, || evaluate_node(jinja.env(), src, key, context));
+                let (out, lines) = match capturing {
+                    Some((min, origin, keyed)) => {
+                        crate::library::log::capture(min, &origin, keyed, render)
+                    }
+                    None => (render(), Vec::new()),
+                };
+                (out, bridge.take_error(), lines)
             });
             for (asked, reply) in questions {
                 let answer = self.fetch_ref(&asked).map(|g| self.used(g));
                 let _ = reply.send(answer);
             }
-            let (out, error) = render
+            let (out, error, lines) = render
                 .join()
                 .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+            crate::library::log::extend(lines);
             match error {
                 Some(e) => Err(e),
                 None => out,
@@ -933,7 +977,16 @@ impl<'a> Resolver<'a> {
                         // is omitted; one that does not compile, cycles or
                         // could not be fetched fails the whole query, already
                         // named.
-                        Ok(None) | Err(ResolveError::Runtime(_)) => {}
+                        Ok(None) => {}
+                        // Left out of the value, so said where a read asks.
+                        Err(ResolveError::Runtime(m)) => {
+                            crate::library::log::raise_at(
+                                crate::protocol::Level::Error,
+                                None,
+                                Some(&leaf),
+                                &m,
+                            );
+                        }
                         Err(e) => return Err(e),
                     }
                 }

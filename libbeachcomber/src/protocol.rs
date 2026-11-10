@@ -119,6 +119,10 @@ pub enum Request {
             skip_serializing_if = "Wait::is_budget"
         )]
         wait: Wait,
+        /// The least level of log line the response carries, beside `data`
+        /// ([`Response::log`]). Absent is none, and costs nothing.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        log: Option<Level>,
     },
     Refresh {
         key: String,
@@ -297,6 +301,66 @@ pub struct Response {
     /// leaf's memo half is. Absent when no var has one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub var_memo: Option<serde_json::Value>,
+    /// The log lines behind a `get`'s answer, at or above the level the
+    /// request's `log` asked for. Absent when it asked for none, or there
+    /// are none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub log: Vec<LogLine>,
+}
+
+/// A log line's level, least first.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Level {
+    Debug,
+    Info,
+    Warn,
+    Error,
+    Fatal,
+}
+
+impl Level {
+    pub fn name(self) -> &'static str {
+        match self {
+            Level::Debug => "debug",
+            Level::Info => "info",
+            Level::Warn => "warn",
+            Level::Error => "error",
+            Level::Fatal => "fatal",
+        }
+    }
+}
+
+/// One line of a log ([`Response::log`]): its level, its text, where it came
+/// from (`source(<name>)`, `template`, `memo`, `client`), and how many times
+/// it came, when more than once. `path` is the directory of the Source
+/// instance that raised it (absent: the global entry, or no instance);
+/// `key` the leaf a client's render raised it for.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LogLine {
+    pub level: Level,
+    pub msg: String,
+    pub origin: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub count: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
+}
+
+impl LogLine {
+    /// A line at `level` from `origin`, about nothing in particular.
+    pub fn new(level: Level, origin: &str, msg: impl Into<String>) -> Self {
+        LogLine {
+            level,
+            msg: msg.into(),
+            origin: origin.to_string(),
+            count: None,
+            path: None,
+            key: None,
+        }
+    }
 }
 
 /// A `get`'s memo half with each memo's `age_ms` taken out, walked beside the
@@ -343,6 +407,7 @@ impl Response {
             memo: None,
             var: None,
             var_memo: None,
+            log: Vec::new(),
         }
     }
 
@@ -538,6 +603,7 @@ mod tests {
             path: None,
             force: false,
             wait: Wait::Budget,
+            log: None,
         };
         assert_eq!(
             serde_json::to_value(&get).unwrap(),
@@ -566,6 +632,7 @@ mod tests {
             path: Some("/r".into()),
             force: true,
             wait,
+            log: None,
         };
         for request in [
             get,
@@ -573,6 +640,13 @@ mod tests {
             waits(Wait::For(Duration::from_millis(50))),
             waits(Wait::For(Duration::from_millis(90_061_001))),
             waits(Wait::Forever),
+            Request::Get {
+                key: "git.branch".into(),
+                path: None,
+                force: false,
+                wait: Wait::Budget,
+                log: Some(Level::Debug),
+            },
             Request::Hello {},
             Request::Introspect {
                 subject: IntrospectSubject::Procs,
@@ -641,6 +715,7 @@ mod tests {
                 path: None,
                 force: false,
                 wait: Wait::For(Duration::from_millis(1500)),
+                log: None,
             })
             .unwrap()["wait"],
             serde_json::json!("1s500ms")
@@ -656,6 +731,7 @@ mod tests {
             path: None,
             force: false,
             wait,
+            log: None,
         };
         assert_eq!(get(Wait::Budget).beyond_timeout(), Some(Duration::ZERO));
         assert_eq!(

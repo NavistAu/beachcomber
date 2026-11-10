@@ -69,7 +69,8 @@ async fn handle_request(ctx: &Ctx, request: &Request) -> Response {
             path,
             force,
             wait,
-        } => handle_get(ctx, registry, key, path.as_deref(), *force, *wait).await,
+            log,
+        } => handle_get(ctx, registry, key, path.as_deref(), *force, *wait, *log).await,
         Request::Refresh { key, path } => handle_refresh(ctx, registry, key, path.as_deref()).await,
         Request::Put {
             key,
