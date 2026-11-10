@@ -27,6 +27,7 @@ mod lazy;
 pub mod library;
 pub mod merge;
 pub mod path;
+pub mod proc;
 pub mod protocol;
 pub mod render;
 pub mod resolve;

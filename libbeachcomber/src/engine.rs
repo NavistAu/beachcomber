@@ -49,10 +49,17 @@ pub struct EngineCtx {
     /// `None` is not deduplicated. Behind a lock because a client's resolution
     /// shares one context across its leaves ([`Self::set_origin`]).
     pub origin: std::sync::Mutex<Option<String>>,
+    /// Whether the render may reach the network beyond this machine
+    /// (`'host:port' | listening`): a daemon Source's lines, as `_.url()`.
+    /// Off, such a call fails saying so.
+    pub network: bool,
+    /// What `_.net` has read in this render ([`crate::library::host`]).
+    pub net: crate::library::host::NetCache,
 }
 
 /// A render with nothing: no environment, no directory, no `exec`, the clock
-/// as it is now, no account of what it reads, and no leaf to memoise.
+/// as it is now, no account of what it reads, no leaf to memoise, and no
+/// network.
 impl Default for EngineCtx {
     fn default() -> Self {
         Self {
@@ -63,6 +70,8 @@ impl Default for EngineCtx {
             touched: None,
             memo: None,
             origin: Default::default(),
+            network: false,
+            net: Default::default(),
         }
     }
 }

@@ -1681,6 +1681,7 @@ mod tests {
             let available = item.tier.available(Surface::Provider);
             let call = match item.form {
                 libbeachcomber::library::Form::Filter => format!("{{{{ 'x' | {} }}}}", item.name),
+                libbeachcomber::library::Form::Value => format!("{{{{ _.{}.x }}}}", item.name),
                 _ => format!("{{{{ _.{}('x') }}}}", item.name),
             };
             let errs = errors(&format!("[demo]\nresult = \"{call}\""));

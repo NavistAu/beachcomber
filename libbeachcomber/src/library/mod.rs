@@ -10,15 +10,17 @@
 //!
 //! The items live in modules by what they work on: [`style`] (colour, text),
 //! [`number`] (numbers shown), [`data`] (objects and lists), [`path`] (path text), [`fs`] (files) and
-//! [`parse`] (text to data), [`icons`] (Nerd Fonts glyphs), [`memo`] (a leaf's memo). `exec` is bound to a
+//! [`parse`] (text to data), [`icons`] (Nerd Fonts glyphs), [`memo`] (a leaf's memo), [`check`] (`which`, `pgrep`, `listening`), [`host`] (`_.os`, `_.net`). `exec` is bound to a
 //! render's process rules and lives in [`crate::engine`]; `url` and `plugin`
 //! live in the daemon.
 
 pub mod absent;
 pub mod bar;
+pub mod check;
 pub mod data;
 pub mod fs;
 pub mod hash;
+pub mod host;
 pub mod icons;
 pub mod log;
 pub mod measure;
@@ -98,6 +100,8 @@ pub enum Form {
     Function,
     /// Both spellings of one item (`merge`, `exec`, `execa`).
     Both,
+    /// A value under `_`, read and not called (`_.os.name`, `_.net.route`).
+    Value,
 }
 
 /// One entry of the library.
@@ -160,6 +164,8 @@ pub const ITEMS: &[Item] = &[
     item!("omit", Filter, Pure, data::add_omit),
     item!("clamp", Filter, Pure, data::add_clamp),
     item!("truthy", Filter, Pure, data::add_truthy),
+    // Read once per process, so it is the same on every read.
+    item!("os", Value, Pure, host::add_os),
     item!("now", Function, Clock, time::add_now),
     item!("strftime", Filter, Clock, time::add_strftime),
     item!("fromiso", Filter, Clock, time::add_fromiso),
@@ -178,6 +184,10 @@ pub const ITEMS: &[Item] = &[
     item!("realpath", Filter, Io, fs::add_realpath),
     item!("glob", Filter, Io, fs::add_glob),
     item!("lup", Function, Io, fs::add_lup),
+    item!("which", Filter, Io, check::add_which),
+    item!("pgrep", Filter, Io, check::add_pgrep),
+    item!("listening", Filter, Io, check::add_listening),
+    item!("net", Value, Io, host::add_net),
     item!("exec", Both, Exec, crate::engine::add_exec),
     item!("execa", Both, Exec, crate::engine::add_execa),
     item!("watch", Filter, Memo, memo::add_watch),
@@ -199,9 +209,10 @@ pub(crate) fn install(env: &mut Environment<'_>, tier: Tier) {
     }
 }
 
-/// Every item called as a function, reached through `_` only: `_.lup(...)`,
-/// `_.log.warn(...)`. A bare name in a template is a provider; a filter form
-/// (`| exec`, `| merge`) stays bare, filters having names of their own.
+/// Every item called as a function, or read as a value, reached through `_`
+/// only: `_.lup(...)`, `_.log.warn(...)`, `_.os.name`. A bare name in a
+/// template is a provider; a filter form (`| exec`, `| merge`) stays bare,
+/// filters having names of their own.
 pub fn functions() -> impl Iterator<Item = &'static Item> {
     ITEMS.iter().filter(|i| i.form != Form::Filter)
 }
@@ -478,7 +489,7 @@ mod tests {
     fn present(env: &Environment<'_>, item: &Item) -> bool {
         match item.form {
             Form::Filter => has_filter(env, item.name),
-            Form::Function => has_function(env, item.name),
+            Form::Function | Form::Value => has_function(env, item.name),
             Form::Both => has_filter(env, item.name) && has_function(env, item.name),
         }
     }
@@ -486,7 +497,7 @@ mod tests {
     fn absent(env: &Environment<'_>, item: &Item) -> bool {
         match item.form {
             Form::Filter => !has_filter(env, item.name),
-            Form::Function => !has_function(env, item.name),
+            Form::Function | Form::Value => !has_function(env, item.name),
             Form::Both => !has_filter(env, item.name) && !has_function(env, item.name),
         }
     }
@@ -600,6 +611,9 @@ mod tests {
             ("cache", "1 | cache"),
             ("watch", "1 | watch"),
             ("ttl", "1 | ttl"),
+            ("which", "[1] | which"),
+            ("pgrep", "'(' | pgrep(regex=true)"),
+            ("listening", "'nope' | listening"),
         ] {
             let err = eval(bad).unwrap_err();
             let why = err.strip_prefix("invalid operation: ").unwrap_or(&err);

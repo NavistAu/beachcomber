@@ -503,8 +503,7 @@ mod tests {
             allow_exec: ctx.allow_exec,
             now: ctx.now,
             touched: Some(touched.clone()),
-            memo: None,
-            origin: Default::default(),
+            ..Default::default()
         };
         (Arc::new(ctx), touched)
     }

@@ -326,8 +326,11 @@ pub fn used_names(line: &str) -> HashMap<String, Use> {
                 .find(|c| !c.is_whitespace())
                 .is_some_and(|c| *c == '(');
             let function = crate::library::functions().any(|f| f.name == name);
+            // `_.net` is used when it is read; a function when it is called.
+            let value =
+                crate::library::item(&name).is_some_and(|i| i.form == crate::library::Form::Value);
             let how = if after_dot && through {
-                (function && called).then_some(Use::Call)
+                (function && (called || value)).then_some(Use::Call)
             } else if after_dot {
                 None
             } else {
@@ -400,7 +403,8 @@ pub(crate) fn bare_calls(src: &str) -> Vec<(usize, String)> {
                     _ => continue,
                 },
                 _ if matches!(after(1), Some(Token::Punct('(')))
-                    && crate::library::functions().any(|f| f.name == name) =>
+                    && crate::library::functions()
+                        .any(|f| f.name == name && f.form != crate::library::Form::Value) =>
                 {
                     name.to_string()
                 }

@@ -704,8 +704,9 @@ impl Source for ConfigSource {
     }
 }
 
-/// What a Source's lines render with: its environment, `exec` on, `cwd` its
-/// directory, noting what its file items read in `touched` (a run's account).
+/// What a Source's lines render with: its environment, `exec` on, the
+/// network on, `cwd` its directory, noting what its file items read in
+/// `touched` (a run's account).
 fn source_ctx(
     env: &HashMap<String, String>,
     cwd: Option<PathBuf>,
@@ -724,6 +725,9 @@ fn source_ctx(
         memo: None,
         // Where its `log.*` lines are said to come from.
         origin: std::sync::Mutex::new(Some(origin)),
+        // Where `_.url()` is: the network is a Source's.
+        network: true,
+        net: Default::default(),
     };
     Arc::new(ctx)
 }

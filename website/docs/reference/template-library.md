@@ -43,11 +43,15 @@ Each item has a tier, and the tier says where it is available.
 
 | tier | reads | client | Source lines | provider lines, `return` decorators |
 |---|---|---|---|---|
-| pure | its arguments | yes | yes | yes |
-| io | files | yes | yes | no |
+| pure | its arguments (and `_.os`, read once per process) | yes | yes | yes |
+| io | files, the process table, sockets, the network's settings | yes | yes | no |
 | exec (`exec`, `execa`) | processes | when `exec` is allowed | yes | no |
 | memo | the template leaf being rendered | a template leaf; in `-f` and `comb eval` they pass their input through | no: a load error | no |
 | daemon | the network, plugins | refused: `_.url() runs only in a Source's lines` | yes | no |
+
+One io item reaches past this machine: `'host:port' | listening` for a host other than loopback is the network, and
+runs only where `_.url()` does, in a Source's lines (elsewhere: `listening(): a host other than this one is the
+network, which runs only in a Source's lines`). A Unix socket or a loopback port is a read, allowed wherever io is.
 
 A provider's lines run on every read, so they use the pure items only. An item that is not available there is a load
 error that names it. The memo items are a client template's: on a Source's lines they are a load error
@@ -136,6 +140,19 @@ the clock of the run they render in, so a stored value is frozen until the next 
 
 Patterns use [Rust `regex` syntax](https://docs.rs/regex/latest/regex/#syntax), with Unicode classes and case folding; an invalid
 pattern is an error, found before the subject is looked at.
+
+### Checks
+
+Reads of the machine, for an `enabled` line (does this provider apply, is its daemon running) or a Source's. None acts
+on anything.
+
+| item | meaning |
+|---|---|
+| `_.os` | `{name, arch, distro, version}` in `uname`'s spellings: `name` is `Darwin` or `Linux`, `arch` as `uname -m` gives it (`arm64` on an Apple Silicon Mac, `aarch64` on Linux ARM, `x86_64`). `distro` is `/etc/os-release`'s `ID` (`ubuntu`), absent on macOS; `version` is macOS's `ProductVersion` (`15.7`) or os-release's `VERSION_ID`. Read once per process, so it is pure: `{{ _.os.name == 'Darwin' }}` |
+| `name \| which` | the full path of the first `name` on the render's `PATH` that you may execute (a regular file), else undefined: `'apt' \| which`. A name holding a `/` is that path, against the render's directory. In a daemon run each directory searched is an input, so a tool installed later is a change (and re-arms a Source `_.log.fatal` stopped) |
+| `pattern \| pgrep(regex=false, full=false)` | the pids of the processes, of any user, whose name matches, ascending; none matching is undefined. `pattern` is a glob on the whole name (no wildcard is the exact name: `'OrbStack' \| pgrep`, `'com.docker.*' \| pgrep`); `regex=true` searches with a regex instead; `full=true` matches the command line (argv joined by spaces) in place of the name, where it can be read (another user's process on macOS is matched by its name). The name is the kernel's: at most 15 bytes on Linux (`comm`), 32 on macOS |
+| `target \| listening` | true when something accepts a connection to `target`, else undefined. A path (it holds a `/`) is a Unix socket (`'/var/run/docker.sock' \| listening`); a port, a number or digits, is loopback, 127.0.0.1 then ::1 (`5432 \| listening`); `'host:5432'` or `'[::1]:5432'` is that host. It connects and closes, sending nothing, within 200ms. Loopback and Unix sockets are reads, allowed wherever io is; any other host is the network, a Source's lines only (above). Text that is none of these, or a port outside 1-65535, is an error |
+| `_.net` | the network's settings, each part read when first used in a render: `interfaces`, a map of name to `{up, addrs}` (its IPv4 and IPv6 addresses, as text); `route`, the IPv4 default route `{interface, gateway}`, and `route6` the IPv6 one, each absent when there is none (of several, the one of least metric on Linux, the first not bound to one interface on macOS); `dns`, a list of resolvers `{servers, domains}`. On macOS `dns` is `scutil --dns`'s resolvers that name a server, `domains` their `domain` and `search domain`s; on Linux it is `/etc/resolv.conf`'s `nameserver`s and `domain`/`search`, or systemd-resolved's own file when the only server is its stub `127.0.0.53`. `{{ _.net.route.interface }}` |
 
 ### Text and terminal
 
