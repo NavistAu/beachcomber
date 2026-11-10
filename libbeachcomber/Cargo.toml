@@ -27,9 +27,11 @@ yaml-rust2 = { version = "0.13", default-features = false }
 regex = { version = "1", default-features = false, features = ["std", "unicode-perl", "unicode-case", "unicode-gencat"] }
 toml = { version = "1", default-features = false, features = ["std", "serde", "parse"] }
 glob = "0.3.4"
+tracing = "0.1"
 
 [dev-dependencies]
 beachcomber = { path = "..", features = ["test-helpers"] }
 tempfile = "3"
 temp-env = "0.3"
+tracing-subscriber = "0.3"
 tokio = { version = "1", features = ["rt-multi-thread", "time", "macros"] }

@@ -44,6 +44,11 @@ pub struct EngineCtx {
     /// `cache()`, `watch()` and `ttl()` read and record into
     /// ([`crate::library::memo`]). `None`, a daemon's render, refuses them.
     pub memo: Option<Arc<crate::library::memo::MemoFrames>>,
+    /// Where the render's `log.*` lines are said to come from: a Source's
+    /// `provider.source` in a daemon run, the leaf's address on a client.
+    /// `None` is not deduplicated. Behind a lock because a client's resolution
+    /// shares one context across its leaves ([`Self::set_origin`]).
+    pub origin: std::sync::Mutex<Option<String>>,
 }
 
 /// A render with nothing: no environment, no directory, no `exec`, the clock
@@ -57,11 +62,28 @@ impl Default for EngineCtx {
             now: std::time::SystemTime::now(),
             touched: None,
             memo: None,
+            origin: Default::default(),
         }
     }
 }
 
 impl EngineCtx {
+    /// The render's origin label, if it has one.
+    pub fn origin(&self) -> Option<String> {
+        self.origin
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+    }
+
+    /// Set the origin label; the previous one comes back, to restore.
+    pub fn set_origin(&self, origin: Option<String>) -> Option<String> {
+        std::mem::replace(
+            &mut *self.origin.lock().unwrap_or_else(|p| p.into_inner()),
+            origin,
+        )
+    }
+
     /// `path` is about to be read: noted, where the render keeps account.
     pub fn touch(&self, path: &std::path::Path) {
         if let Some(touched) = &self.touched {

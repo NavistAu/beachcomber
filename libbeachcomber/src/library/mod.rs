@@ -20,6 +20,7 @@ pub mod data;
 pub mod fs;
 pub mod hash;
 pub mod icons;
+pub mod log;
 pub mod measure;
 pub mod memo;
 pub mod number;
@@ -146,6 +147,8 @@ pub const ITEMS: &[Item] = &[
     item!("dirname", Filter, Pure, path::add_dirname),
     item!("pluck", Filter, Pure, data::add_pluck),
     item!("merge", Both, Pure, data::add_merge),
+    item!("log", Function, Pure, log::add_log),
+    item!("fail", Function, Pure, log::add_fail),
     item!("map", Filter, Pure, data::add_map),
     item!("pick", Filter, Pure, data::add_pick),
     item!("omit", Filter, Pure, data::add_omit),

@@ -504,6 +504,7 @@ mod tests {
             now: ctx.now,
             touched: Some(touched.clone()),
             memo: None,
+            origin: Default::default(),
         };
         (Arc::new(ctx), touched)
     }

@@ -952,6 +952,8 @@ dependencies = [
  "tempfile",
  "tokio",
  "toml",
+ "tracing",
+ "tracing-subscriber",
  "unicode-width",
  "yaml-rust2",
 ]

@@ -274,7 +274,12 @@ impl<'e> Probe<'e> {
     ) -> impl Iterator<Item = String> {
         names
             .into_iter()
-            .filter(|name| !self.globals.contains(name))
+            // `log.warn` is read as the nested name, so the head is the global.
+            .filter(|name| {
+                !self
+                    .globals
+                    .contains(name.split('.').next().unwrap_or(name))
+            })
     }
 }
 
@@ -635,6 +640,16 @@ mod tests {
 
     fn resolved(provider: &str, field: &str) -> Ref {
         Ref::Resolved(provider.into(), field.into())
+    }
+
+    #[test]
+    fn log_and_fail_are_not_provider_refs() {
+        assert_eq!(
+            discover_refs(
+                "{{ log.warn('x') }}{% if a %}{{ fail('y') }}{% endif %}{{ git.branch }}"
+            ),
+            vec![resolved("git", "branch"), Ref::Dynamic("a".into())]
+        );
     }
 
     // --- eval template tests ---

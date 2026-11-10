@@ -118,6 +118,7 @@ mod shipped;
 mod shutdown;
 mod status_shape;
 mod store;
+mod template_log;
 mod test_isolation;
 mod validity;
 mod watch;

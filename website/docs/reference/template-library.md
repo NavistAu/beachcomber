@@ -165,6 +165,27 @@ colour of `none` applies no colour.
 mapped to the nearest one it has. A caller that wants 24-bit colour passes `COLORTERM` (and `TERM`) in the render's
 environment; `comb eval` and `comb get` pass the process environment. Without them the render is 16-colour.
 
+### Logging and failing
+
+| item | meaning |
+|---|---|
+| `log.debug(msg)`, `log.info(msg)`, `log.warn(msg)` | writes a line at that level and renders nothing; the render goes on. A non-string is written as its text. A line an origin repeats on every run is written when it first appears or changes, then counted: a different line follows `msg (repeated N times)`. A render with no origin is not counted |
+| `log.error(msg)`, `fail(msg)` | fails the render with `msg`, as a failed `exec()` does. `fail(msg)` is `log.error(msg)` |
+| `log.fatal(msg)` | fails as `log.error`; the failure is marked fatal, and does not yet stop the retries |
+
+`log` has these five methods; another (`log.critical`) is an error that lists them. Put the failure check first and the
+happy path last:
+
+```jinja
+{% if not env.SSH_AUTH_SOCK %}{{ fail('no ssh agent') }}{% endif %}{{ happy path }}
+```
+
+A Source's run that fails keeps its last good value and backs off (see "When the command fails" in
+[From a command](../custom-providers/from-a-command.md)); the daemon log has `WARN Source 'p.s' failed: p.s: data: no
+ssh agent`. In a client template a single-leaf read fails, a namespace read omits the leaf, and `comb status` shows the
+error as the value. The `debug`, `info` and `warn` lines go to the daemon log, at the origin `provider.source`; on the
+client they go nowhere yet.
+
 ### Caching a template
 
 A leaf piped through `cache()` renders once per change rather than once per read. The daemon holds its value, the

@@ -437,6 +437,8 @@ impl<'a> Resolver<'a> {
                 // A client's render: nothing checks what it read.
                 touched: None,
                 memo: Some(self.frames.clone()),
+                // Set per leaf, as each renders ([`Self::render_as`]).
+                ..Default::default()
             })
         })
     }
@@ -682,8 +684,10 @@ impl<'a> Resolver<'a> {
             self.render_with_lazy_comb(src, key, bound, &refs)
         } else {
             let context = self.context(None, bound);
-            with_ctx(self.ctx().clone(), || {
-                evaluate_node(self.jinja().env(), src, key, context)
+            self.as_leaf(key, || {
+                with_ctx(self.ctx().clone(), || {
+                    evaluate_node(self.jinja().env(), src, key, context)
+                })
             })
         };
         if let Some(Frame::Leaf(leaf)) = self.frames.pop() {
@@ -811,8 +815,10 @@ impl<'a> Resolver<'a> {
         let context = self.context(Some(comb), bound);
         let jinja = self.jinja().clone();
         let ctx = self.ctx().clone();
+        let keep = ctx.clone();
 
-        std::thread::scope(|scope| {
+        let previous = keep.set_origin(Some(key.to_string()));
+        let out = std::thread::scope(|scope| {
             let render = scope.spawn(move || {
                 let out = with_ctx(ctx, || evaluate_node(jinja.env(), src, key, context));
                 (out, bridge.take_error())
@@ -828,7 +834,19 @@ impl<'a> Resolver<'a> {
                 Some(e) => Err(e),
                 None => out,
             }
-        })
+        });
+        keep.set_origin(previous);
+        out
+    }
+
+    /// Run `f`, a render of the leaf at `key`, with that address as the
+    /// origin of the lines it logs.
+    fn as_leaf<R>(&self, key: &str, f: impl FnOnce() -> R) -> R {
+        let ctx = self.ctx();
+        let previous = ctx.set_origin(Some(key.to_string()));
+        let out = f();
+        ctx.set_origin(previous);
+        out
     }
 
     /// Render every string leaf of a template tree, keeping its shape.

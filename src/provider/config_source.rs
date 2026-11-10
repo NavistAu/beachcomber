@@ -552,7 +552,12 @@ impl ConfigSource {
         };
         // What the lines read is the run's to check its record by: noted in
         // the account the run keeps on this thread.
-        let ctx = source_ctx(&self.env, Some(cwd), crate::run::reads_here());
+        let ctx = source_ctx(
+            &self.env,
+            Some(cwd),
+            crate::run::reads_here(),
+            format!("{}.{}", self.spec.provider, self.spec.name),
+        );
         with_ctx(ctx, || self.render_lines(path))
     }
 
@@ -643,9 +648,11 @@ impl Source for ConfigSource {
         // (`ProviderRegistry`'s kept roots), not checked as a record's files.
         let jinja = daemon_engine_env(self.plugins.clone());
         let context = json!({"env": &*self.env, "_": self.underscore()});
-        let rendered = with_ctx(source_ctx(&self.env, Some(dir.into()), None), || {
-            eval_line(&jinja, line, &context)
-        })
+        let origin = format!("{}.{}", self.spec.provider, self.spec.name);
+        let rendered = with_ctx(
+            source_ctx(&self.env, Some(dir.into()), None, origin),
+            || eval_line(&jinja, line, &context),
+        )
         .map_err(|e| stage_error(&self.spec, "root", e))?;
         match rendered {
             None => Ok(None),
@@ -685,6 +692,7 @@ fn source_ctx(
     env: &HashMap<String, String>,
     cwd: Option<PathBuf>,
     touched: Option<Arc<Touched>>,
+    origin: String,
 ) -> Arc<EngineCtx> {
     let ctx = EngineCtx {
         env: env.clone(),
@@ -696,6 +704,8 @@ fn source_ctx(
         // A Source's records are the daemon's: no leaf to memoise, so
         // `cache()`, `watch()` and `ttl()` refuse (and its load does first).
         memo: None,
+        // Where its `log.*` lines are said to come from.
+        origin: std::sync::Mutex::new(Some(origin)),
     };
     Arc::new(ctx)
 }
@@ -1024,6 +1034,16 @@ mod tests {
         let src = source(spec(None, "{{ 1 }}", fields(&[("a", "{{ 'a' + 1 }}")])));
         let err = src.execute(None).unwrap_err();
         assert!(err.starts_with("demo.s: result.a: "), "{err}");
+    }
+
+    #[test]
+    fn fail_fails_the_run_with_the_users_message() {
+        let src = source(spec(
+            None,
+            "{% if true %}{{ fail('no ssh agent') }}{% endif %}{{ 1 }}",
+            fields(&[("kept", "k")]),
+        ));
+        assert_eq!(src.execute(None).unwrap_err(), "demo.s: data: no ssh agent");
     }
 
     #[test]
