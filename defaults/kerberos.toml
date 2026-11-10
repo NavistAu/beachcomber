@@ -1,0 +1,9 @@
+[daemon.providers.kerberos]
+# On only where `klist` is on the daemon's PATH; the templates below run in your shell.
+enabled.template = "{{ 'klist' | which }}"
+
+[client.providers.kerberos.template]
+# Whether the shell's credential cache ($KRB5CCNAME) holds a valid ticket: the exit status of `klist -s` (MIT's silent flag, Heimdal's alias of `--test`). Memoised on the cache name, for 30 seconds.
+ticket = "{{ ('klist -s' | ttl('30s') | cache(env.KRB5CCNAME) | execa(ok=[0, 1, 2])).exit_code == 0 }}"
+# The cache's principal: MIT's `Default principal: …`, Heimdal's `Principal: …`; absent when the cache holds none.
+principal = "{{ (('klist' | ttl('30s') | cache(env.KRB5CCNAME) | execa(ok=[0, 1, 2])).stdout | regex_search('(?m)^\\\\s*(?:Default p|P)rincipal:\\\\s*(\\\\S+)') or [none, none])[1] }}"

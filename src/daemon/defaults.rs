@@ -37,9 +37,14 @@ pub const SHIPPED: &[(&str, &str)] = &[
     ("direnv.toml", include_str!("../../defaults/direnv.toml")),
     ("gcloud.toml", include_str!("../../defaults/gcloud.toml")),
     ("git.toml", include_str!("../../defaults/git.toml")),
+    ("gpg.toml", include_str!("../../defaults/gpg.toml")),
     (
         "hostname.toml",
         include_str!("../../defaults/hostname.toml"),
+    ),
+    (
+        "kerberos.toml",
+        include_str!("../../defaults/kerberos.toml"),
     ),
     (
         "kubecontext.toml",
@@ -50,6 +55,7 @@ pub const SHIPPED: &[(&str, &str)] = &[
     ("network.toml", include_str!("../../defaults/network.toml")),
     ("op.toml", include_str!("../../defaults/op.toml")),
     ("python.toml", include_str!("../../defaults/python.toml")),
+    ("ssh.toml", include_str!("../../defaults/ssh.toml")),
     ("sudo.toml", include_str!("../../defaults/sudo.toml")),
     ("talos.toml", include_str!("../../defaults/talos.toml")),
     (

@@ -46,6 +46,9 @@ Every example below is a real run, with personal details replaced.
 | [`talos`](#talos) | talosctl context | global | `talosctl` |
 | [`conda`](#conda) | Active conda environment | global | — |
 | [`op`](#op) | Whether a 1Password service-account token is set | global | — |
+| [`ssh`](#ssh) | Whether your ssh agent answers, and the keys it holds | global | `ssh-add` |
+| [`gpg`](#gpg) | Whether gpg-agent runs, and how many keys have a cached passphrase | global | `gpg-connect-agent` |
+| [`kerberos`](#kerberos) | Whether you hold a valid Kerberos ticket | global | `klist` |
 
 "Needs" is what must be installed for the namespace to have values. A tool the daemon runs (`git`, `mise`) must be on
 the daemon's `PATH`, which is the `PATH` of the shell that started it. A tool a template runs (`kubectl`, `talosctl`)
@@ -467,3 +470,43 @@ Elsewhere the field is the error `exec() is disabled in this context`.
 | Field | Meaning | Example |
 |---|---|---|
 | `service_account` | Whether `$OP_SERVICE_ACCOUNT_TOKEN` is set in your shell. Never the token, and nothing about whether it is valid | `false` |
+
+### ssh
+
+Your shell's ssh agent, from `ssh-add -l`. Rendered in your shell, so it asks the agent at your `$SSH_AUTH_SOCK`. The
+answer is remembered for 30 seconds per socket. The provider is on only where `ssh-add` is on the daemon's `PATH`, and a
+read runs a command, so it renders where `kubecontext` does (see above).
+
+| Field | Meaning | Example |
+|---|---|---|
+| `agent` | Whether an agent answers at `$SSH_AUTH_SOCK` | `true` |
+| `keys` | How many keys it holds, `0` when it holds none or there is no agent | `2` |
+| `identities` | Each key's comment, the text between its fingerprint and its `(TYPE)`; `[]` when it holds none or there is no agent | `["josh@laptop"]` |
+| `forwarded` | Whether `$SSH_AUTH_SOCK` is the socket sshd makes for a forwarded agent, `/tmp/ssh-*/agent.*`. A guess from the path | `false` |
+
+Not shipped: `authorized_keys` and `known_hosts` counts. They say who can log in, not what your prompt should show; write
+a [custom provider](../custom-providers/from-a-command.md) if you want them.
+
+### gpg
+
+Your gpg-agent, from `gpg-connect-agent --no-autostart 'keyinfo --list' /bye`. It never starts an agent. Remembered for
+30 seconds per `$GNUPGHOME`. On only where `gpg-connect-agent` is on the daemon's `PATH`. Meant as a warning rather than
+a display: colour a prompt when `gpg.cached` is `0`, or have a shell plugin say that the next `git commit` will ask for
+a passphrase. It names no key.
+
+| Field | Meaning | Example |
+|---|---|---|
+| `agent` | Whether gpg-agent is running | `true` |
+| `keys` | How many keys it holds secrets for; `0` when it is not running | `2` |
+| `cached` | How many of those have their passphrase cached; `0` when it is not running | `0` |
+
+### kerberos
+
+Whether your shell holds a valid Kerberos ticket, from `klist`: on an enrolled machine, a command that wants Kerberos
+fails when it does not. Remembered for 30 seconds per `$KRB5CCNAME`. On only where `klist` is on the daemon's `PATH`.
+It reads MIT Kerberos and macOS's Heimdal alike. There is no expiry field: `ticket` already says whether it has passed.
+
+| Field | Meaning | Example |
+|---|---|---|
+| `ticket` | Whether the credential cache holds a valid ticket, the exit status of `klist -s` | `true` |
+| `principal` | The cache's principal (MIT's `Default principal:`, Heimdal's `Principal:`); absent when there is no cache | `josh@EXAMPLE.COM` |

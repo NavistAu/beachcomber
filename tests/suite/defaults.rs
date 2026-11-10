@@ -303,7 +303,7 @@ fn every_shipped_template_is_a_single_tag_that_compiles() {
             }
         }
     }
-    assert_eq!(checked, 14, "every shipped template is covered");
+    assert_eq!(checked, 23, "every shipped template is covered");
 }
 
 /// A shipped Source is documented where it is written: the line under its
@@ -418,13 +418,16 @@ fn shipped_layers_parse_and_load_with_no_errors() {
         "gcloud",
         "gcloud_configs",
         "git",
+        "gpg",
         "hostname",
+        "kerberos",
         "kubecontext",
         "load",
         "mise",
         "network",
         "op",
         "python",
+        "ssh",
         "sudo",
         "talos",
         "terraform",

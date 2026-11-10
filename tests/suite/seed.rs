@@ -389,8 +389,15 @@ async fn a_client_that_is_not_a_table_stops_the_daemon_starting() {
         "client = \"oops\"\n\n[daemon.providers.git.cache._]\ndecay = 0\n",
         &[],
     );
+    // Without `[client]` the shipped template-only providers that carry an
+    // `enabled` (`ssh`, `gpg`, `kerberos`) have nothing to switch: a
+    // consequence, named in their own files, not what this is about.
+    let errors: Vec<String> = startup_errors()
+        .into_iter()
+        .filter(|e| !e.contains("defaults/"))
+        .collect();
     assert_eq!(
-        startup_errors(),
+        errors,
         vec![
             format!("{}: [client] must be a table", e.label("config.toml")),
             format!(
