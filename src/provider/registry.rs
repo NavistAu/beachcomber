@@ -1904,6 +1904,10 @@ result.x = "{{ data }}"
         std::fs::create_dir_all(&sub).unwrap();
         let (base_str, sub_str) = (base.to_str().unwrap(), sub.to_str().unwrap());
         std::fs::write(sub.join("root.txt"), base_str).unwrap();
+        // Stamps of a walk just made are racy, and a racy one is looked up
+        // again whatever changed: a fast load would see that, not the keep.
+        age(&sub);
+        age(&base);
         let reg = registry_from(
             "[daemon.providers.demo.sources.s]\nroot = \"{{ 'root.txt' | read }}\"\ndata = \"{{ 1 }}\"\nresult.x = \"{{ data }}\"\n",
         );
