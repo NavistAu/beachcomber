@@ -253,10 +253,21 @@ fn a_refusal_sent_before_the_connection_closed_is_still_the_answer() {
     let daemon = std::thread::spawn(move || {
         use std::io::{BufRead, Write};
         let (stream, _) = listener.accept().expect("accept");
+        let mut reader = std::io::BufReader::new(&stream);
         let mut request = String::new();
-        std::io::BufReader::new(&stream)
-            .read_line(&mut request)
-            .expect("the watch request");
+        reader.read_line(&mut request).expect("the hello");
+        // The client's `hello` comes first, answered as a daemon of this
+        // protocol answers it.
+        if request.contains("\"hello\"") {
+            let hello = serde_json::json!({"ok": true, "data": {
+                "protocol_version": libbeachcomber::protocol::PROTOCOL_VERSION,
+                "daemon_version": libbeachcomber::VERSION}});
+            (&stream)
+                .write_all(format!("{hello}\n").as_bytes())
+                .expect("the hello's answer");
+            request.clear();
+            reader.read_line(&mut request).expect("the watch request");
+        }
         (&stream)
             .write_all(b"{\"ok\":false,\"error\":\"invalid facet key: a:b:c\"}\n")
             .expect("the refusal");

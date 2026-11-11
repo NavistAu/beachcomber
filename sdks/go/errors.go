@@ -39,6 +39,9 @@ var (
 	ErrServer = &Error{Kind: "server_error", Message: "the daemon refused the request"}
 	// ErrTimeout: a read or write ran out timeout_ms, or NextEvent ran out its timeout.
 	ErrTimeout = &Error{Kind: "timeout", Message: "timed out"}
+	// ErrProtocolMismatch: the daemon speaks a protocol whose major is not
+	// the library's; restart the daemon, or upgrade the library.
+	ErrProtocolMismatch = &Error{Kind: "protocol_mismatch", Message: "the daemon speaks another protocol major"}
 	// ErrBusy: a session or watch is in use by another caller.
 	ErrBusy = &Error{Kind: "busy", Message: "the handle is in use by another caller"}
 	// ErrPanic: the library panicked; the panic was caught at the boundary.

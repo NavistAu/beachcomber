@@ -156,6 +156,7 @@ passes on what its caller gave and adds no defaults of its own.
 | `parse_error` | library | A request, response, option or template could not be read. |
 | `server_error` | library | The daemon refused the request, or a template failed to render. |
 | `timeout` | library | A read or write ran out `timeout_ms`. |
+| `protocol_mismatch` | ABI | The daemon speaks a protocol whose major is not the library's; restart the daemon (`comb kill`) or upgrade the library. |
 | `busy` | ABI | A session or watch is in use by another caller. |
 | `panic` | ABI | The library panicked; caught at the boundary. |
 | `library_not_found` | SDK | No `libbeachcomber` loaded from any candidate. |

@@ -22,6 +22,19 @@ use std::path::PathBuf;
 /// rejection). Serves requests in a loop on the one connection, exactly as
 /// a real `Session` (or a `Client`'s single-op connection) would see.
 fn spawn_fake_daemon(daemon_version: &'static str, fail_ops: bool) -> (tempfile::TempDir, PathBuf) {
+    spawn_fake_speaking(
+        libbeachcomber::protocol::PROTOCOL_VERSION,
+        daemon_version,
+        fail_ops,
+    )
+}
+
+/// [`spawn_fake_daemon`], whose `hello` says it speaks `protocol`.
+fn spawn_fake_speaking(
+    protocol: &'static str,
+    daemon_version: &'static str,
+    fail_ops: bool,
+) -> (tempfile::TempDir, PathBuf) {
     let tmp = tempfile::tempdir().unwrap();
     let sock = tmp.path().join("sock");
     let listener = UnixListener::bind(&sock).unwrap();
@@ -46,7 +59,7 @@ fn spawn_fake_daemon(daemon_version: &'static str, fail_ops: bool) -> (tempfile:
                         serde_json::json!({
                             "ok": true,
                             "data": {
-                                "protocol_version": "1",
+                                "protocol_version": protocol,
                                 "daemon_version": daemon_version,
                             }
                         })
@@ -228,4 +241,55 @@ fn client_watch_refusal_names_both_versions() {
     assert!(err.contains("boom"), "{err}");
     assert!(err.contains(libbeachcomber::VERSION), "{err}");
     assert!(err.contains("9.9.9-totally-different"), "{err}");
+}
+
+/// A daemon whose protocol major is not this client's is refused, every op
+/// and every transport, naming both versions and what to do; one whose
+/// minor alone differs is talked to.
+#[test]
+fn a_daemon_of_another_protocol_major_is_refused() {
+    use libbeachcomber::protocol::PROTOCOL_VERSION;
+    for (theirs, what) in [
+        ("1.0", "restart the daemon"),
+        ("3.0", "upgrade this client"),
+    ] {
+        let (_tmp, sock) = spawn_fake_speaking(theirs, libbeachcomber::VERSION, false);
+        let client = client_for(&sock);
+        let refused = client.get("hostname", None).unwrap_err();
+        assert_eq!(refused.kind(), libbeachcomber::kind::PROTOCOL_MISMATCH);
+        let msg = refused.to_string();
+        assert!(
+            msg.contains(&format!(
+                "protocol {theirs} and this client {PROTOCOL_VERSION}"
+            )),
+            "{msg}"
+        );
+        assert!(msg.contains(what), "{msg}");
+        assert!(
+            client.get("hostname", None).is_err(),
+            "every op, not the first"
+        );
+        assert!(client.watch("hostname", None).is_err());
+        let mut session = client.session().unwrap();
+        assert_eq!(
+            session.get("hostname", None).unwrap_err().to_string(),
+            libbeachcomber::CombError::ProtocolMismatch {
+                ours: PROTOCOL_VERSION.into(),
+                theirs: theirs.into()
+            }
+            .to_string()
+        );
+        assert_eq!(
+            client.hello().unwrap().protocol_version,
+            theirs,
+            "hello answers"
+        );
+    }
+    let (_tmp, sock) = spawn_fake_speaking("2.7", libbeachcomber::VERSION, false);
+    let client = client_for(&sock);
+    assert!(
+        client.get("hostname", None).is_ok(),
+        "a minor difference talks"
+    );
+    assert!(client.session().unwrap().get("hostname", None).is_ok());
 }

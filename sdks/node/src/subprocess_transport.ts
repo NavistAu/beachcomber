@@ -201,8 +201,20 @@ function runComb(
   return { code: result.status, stdout: result.stdout ?? '', stderr: result.stderr ?? '' };
 }
 
+/** What `comb` says of a daemon whose protocol major is not its own. */
+const PROTOCOL_REFUSAL = 'the daemon speaks protocol ';
+
+/** The CLI refused a daemon of another protocol major: the kind the FFI tier gives it. */
+function protocolRefusal(stderr: string): ErrEnvelope | undefined {
+  const line = stderr.split('\n').find((l) => l.includes(PROTOCOL_REFUSAL) && l.includes('which cannot talk'));
+  if (line === undefined) return undefined;
+  return { ok: false, error: { kind: 'protocol_mismatch', message: line.slice(line.indexOf(PROTOCOL_REFUSAL)) } };
+}
+
 /** Best-effort error kind classification from a CLI failure's stderr text. */
 function envelopeFromFailure(stderr: string): ErrEnvelope {
+  const refused = protocolRefusal(stderr);
+  if (refused !== undefined) return refused;
   const text = stderr.trim() || 'comb exited with a non-zero status';
   const kind = /connection refused|no such file or directory|daemon is not running/i.test(text)
     ? 'daemon_not_running'
@@ -252,6 +264,8 @@ function cliGet(
   const { code, stdout, stderr } = runComb(handle, args, vars);
 
   if (code !== 0) {
+    const mismatch = protocolRefusal(stderr);
+    if (mismatch !== undefined) return mismatch;
     const refused = waitRefusal(stderr);
     if (refused !== undefined) return refused;
     const lines = stderr.split('\n');
@@ -293,6 +307,8 @@ function cliEval(
   const args = [...colourArgs(vars), ...execArgs(handle), 'eval', '-f', 'json', ...pathArgs(path_), '--', template];
   const { code, stdout, stderr } = runComb(handle, args, vars);
   if (code !== 0) {
+    const mismatch = protocolRefusal(stderr);
+    if (mismatch !== undefined) return mismatch;
     const text = stderr.trim();
     // The CLI failed before answering at all: no daemon, a bad argument.
     if (text === '' || text.startsWith('error: daemon:')) return envelopeFromFailure(stderr);
@@ -333,6 +349,8 @@ function cliRefresh(handle: SubprocessClientHandle, key: string, path_: string |
   const args = ['refresh', key, ...pathArgs(path_)];
   const { code, stderr } = runComb(handle, args);
   if (code !== 0) {
+    const mismatch = protocolRefusal(stderr);
+    if (mismatch !== undefined) return mismatch;
     const trimmed = stderr.trim();
     // The daemon's own refusal is the CLI's only stderr line. Anything else
     // — nothing printed, or `error: daemon: …` — means the CLI never reached
@@ -472,6 +490,8 @@ function arrival(w: SubprocessWatchHandle, timeoutMs: number): Promise<boolean> 
  */
 function watchFailure(w: SubprocessWatchHandle): Error {
   const identity = `subprocess:${w.combBin}`;
+  const mismatch = protocolRefusal(w.stderr);
+  if (mismatch !== undefined) return errorFromEnvelope(mismatch.error, identity);
   const prefix = `error: ${w.key}: `;
   const own = w.stderr
     .split('\n')

@@ -54,6 +54,7 @@ export {
   ServerError,
   TimeoutError,
   BusyError,
+  ProtocolMismatchError,
   PanicError,
   LibraryNotFoundError,
   LibrarySymbolError,

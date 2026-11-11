@@ -17,6 +17,7 @@ export type CombErrorKind =
   | 'parse_error'
   | 'server_error'
   | 'timeout'
+  | 'protocol_mismatch'
   | 'busy'
   | 'panic'
   | 'library_not_found'
@@ -62,7 +63,8 @@ export class ParseError extends kindError('parse_error') {}
 export class ServerError extends kindError('server_error') {}
 /** A read or write ran out `timeoutMs`, or `nextEvent` ran out its timeout. */
 export class TimeoutError extends kindError('timeout') {}
-/** A flag bit the ABI does not define was set. */
+/** The daemon speaks a protocol whose major is not the library's: restart the daemon, or upgrade the library. */
+export class ProtocolMismatchError extends kindError('protocol_mismatch') {}
 /** A session or watch is in use by another caller. */
 export class BusyError extends kindError('busy') {}
 /** The library panicked; the panic was caught at the boundary. */
@@ -81,6 +83,7 @@ const BY_KIND: Record<CombErrorKind, new (message: string, libraryVersion?: stri
   parse_error: ParseError,
   server_error: ServerError,
   timeout: TimeoutError,
+  protocol_mismatch: ProtocolMismatchError,
   busy: BusyError,
   panic: PanicError,
   library_not_found: LibraryNotFoundError,

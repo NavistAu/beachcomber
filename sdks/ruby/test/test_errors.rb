@@ -10,6 +10,7 @@ class TestErrors < Minitest::Test
     'parse_error' => Beachcomber::ParseError,
     'server_error' => Beachcomber::ServerError,
     'timeout' => Beachcomber::TimeoutError,
+    'protocol_mismatch' => Beachcomber::ProtocolMismatchError,
     'library_not_found' => Beachcomber::LibraryNotFoundError,
     'library_symbol' => Beachcomber::LibrarySymbolError,
     'unsupported' => Beachcomber::UnsupportedError,

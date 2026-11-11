@@ -255,6 +255,7 @@ One sentinel per kind matches an `*Error` of that kind with `errors.Is`:
 | `ErrParse` | `parse_error` | A request, a response or a template could not be read. |
 | `ErrServer` | `server_error` | The daemon refused the request, or a template failed to render. |
 | `ErrTimeout` | `timeout` | A read or write ran out `timeout_ms`, or `NextEvent(ms)` ran out. |
+| `ErrProtocolMismatch` | `protocol_mismatch` | The daemon speaks a protocol whose major is not the library's; restart the daemon (`comb kill`) or upgrade the library. |
 | `ErrBusy` | `busy` | A session or watch is in use by another caller. |
 | `ErrPanic` | `panic` | The library panicked; the panic was caught at the boundary. |
 | `ErrLibraryNotFound` | `library_not_found` | No `libbeachcomber` was found where discovery looks. |

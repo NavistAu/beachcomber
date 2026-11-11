@@ -397,4 +397,24 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
   c:close()
   os.execute("kill " .. tostring(guard.pid) .. " 2>/dev/null; rm -rf " .. guard.tmpdir)
   if not ran then error(failure, 0) end
+
+  -- A `comb` that refuses a daemon of another protocol major says so on
+  -- stderr; this tier gives it the kind the ffi tier does.
+  suite("subprocess_backend and a daemon of another protocol major")
+  local words = "the daemon speaks protocol 3.0 and this client 2.0, which cannot talk: "
+    .. "upgrade this client to one that speaks it"
+  local fake = os.tmpname()
+  local f = io.open(fake, "w")
+  f:write("#!/bin/sh\necho 'error: daemon: " .. words .. "' >&2\nexit 2\n")
+  f:close()
+  os.execute("chmod +x " .. fake)
+  local backend = require("beachcomber.subprocess_backend").new({ comb_bin = fake, socket_path = "/nonexistent" })
+  test("every op is protocol_mismatch, in the CLI's words", function()
+    for _, env in ipairs({ backend:get("x.y"), backend:put("x", 1), backend:refresh("x"), backend:status() }) do
+      assert_eq(env.ok, false)
+      assert_eq(env.error.kind, "protocol_mismatch")
+      assert_eq(env.error.message, words)
+    end
+  end)
+  os.remove(fake)
 end

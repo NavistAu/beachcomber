@@ -183,6 +183,28 @@ impl std::fmt::Display for VersionMismatch {
     }
 }
 
+/// A `MAJOR.MINOR` version's major; `None` when it is not one.
+fn major(version: &str) -> Option<u32> {
+    version.split('.').next()?.parse().ok()
+}
+
+/// The daemon's `protocol_version`, when its major is not
+/// [`protocol::PROTOCOL_VERSION`]'s (or it is not a version): a daemon this
+/// client cannot talk to. A minor difference talks.
+fn incompatible(hello: &HelloInfo) -> Option<String> {
+    let theirs = major(&hello.protocol_version);
+    (theirs.is_none() || theirs != major(protocol::PROTOCOL_VERSION))
+        .then(|| hello.protocol_version.clone())
+}
+
+/// The refusal of a daemon that speaks `theirs`.
+fn refusal(theirs: &str) -> CombError {
+    CombError::ProtocolMismatch {
+        ours: protocol::PROTOCOL_VERSION.to_string(),
+        theirs: theirs.to_string(),
+    }
+}
+
 /// Compare a `hello` response against this build's identity.
 fn detect_skew(hello: &HelloInfo) -> Option<VersionMismatch> {
     if hello.daemon_version == VERSION {
@@ -368,6 +390,10 @@ pub enum CombError {
     ServerError(String),
     /// Operation timed out.
     Timeout,
+    /// The daemon speaks a protocol whose major is not this client's: it
+    /// cannot be talked to. `theirs` is its `protocol_version`, `ours`
+    /// [`protocol::PROTOCOL_VERSION`].
+    ProtocolMismatch { ours: String, theirs: String },
 }
 
 impl std::fmt::Display for CombError {
@@ -379,6 +405,20 @@ impl std::fmt::Display for CombError {
             CombError::ParseError(s) => write!(f, "parse error: {}", s),
             CombError::ServerError(s) => write!(f, "server error: {}", s),
             CombError::Timeout => write!(f, "operation timed out"),
+            CombError::ProtocolMismatch { ours, theirs } => {
+                let what = match (major(theirs), major(ours)) {
+                    (Some(t), Some(o)) if t < o => {
+                        "restart the daemon (comb kill; the next query starts this release's)"
+                    }
+                    (Some(_), Some(_)) => "upgrade this client to one that speaks it",
+                    _ => "restart the daemon, or upgrade this client",
+                };
+                write!(
+                    f,
+                    "the daemon speaks protocol {theirs} and this client {ours}, which cannot \
+                     talk: {what}"
+                )
+            }
         }
     }
 }
@@ -406,6 +446,7 @@ impl CombError {
             CombError::ParseError(_) => kind::PARSE_ERROR,
             CombError::ServerError(_) => kind::SERVER_ERROR,
             CombError::Timeout => kind::TIMEOUT,
+            CombError::ProtocolMismatch { .. } => kind::PROTOCOL_MISMATCH,
         }
     }
 }
@@ -420,6 +461,7 @@ pub mod kind {
     pub const PARSE_ERROR: &str = "parse_error";
     pub const SERVER_ERROR: &str = "server_error";
     pub const TIMEOUT: &str = "timeout";
+    pub const PROTOCOL_MISMATCH: &str = "protocol_mismatch";
 }
 
 /// An I/O failure on a request. A read or write that ran out the client's
@@ -471,6 +513,9 @@ pub struct Client {
     /// connection. Checked once — later connections reuse this rather than
     /// probing again, so it is never a per-op cost.
     version_mismatch: OnceLock<Option<VersionMismatch>>,
+    /// The daemon's protocol version, when that same `hello` showed it
+    /// cannot be talked to ([`incompatible`]): every op is refused.
+    refused: OnceLock<Option<String>>,
 }
 
 impl Client {
@@ -481,6 +526,7 @@ impl Client {
             socket_path_override: None,
             connect_timeout: DEFAULT_CONNECT_TIMEOUT,
             version_mismatch: OnceLock::new(),
+            refused: OnceLock::new(),
         }
     }
 
@@ -491,6 +537,7 @@ impl Client {
             socket_path_override: None,
             connect_timeout: DEFAULT_CONNECT_TIMEOUT,
             version_mismatch: OnceLock::new(),
+            refused: OnceLock::new(),
         }
     }
 
@@ -511,17 +558,40 @@ impl Client {
     }
 
     /// One request on a fresh connection, answered: the reply's envelope.
-    /// The first call also probes for version skew, with a trailing `hello`
-    /// *after* the caller's own exchange — never before it — so it is checked
-    /// once per `Client`, not per op, and a probe failure leaves the skew
-    /// unknown rather than failing the op.
+    /// The first call also sends a `hello`, on the same connection and before
+    /// the caller's own exchange, so it is checked once per `Client`, not per
+    /// op, and a daemon whose protocol major is not ours is refused before it
+    /// acts on anything. A probe that fails leaves both unknown, and the op
+    /// goes on a fresh connection.
     fn call(&self, request: &Request) -> Result<Response, CombError> {
         let mut conn = self.open()?;
-        let line = conn.exchange(request)?;
-        if self.version_mismatch.get().is_none() {
-            let _ = self.version_mismatch.set(conn.skew());
+        if self.version_mismatch.get().is_none() && !self.probe(&mut conn) {
+            conn = self.open()?;
         }
+        self.refuse()?;
+        let line = conn.exchange(request)?;
         envelope(&line, self.skew_ref())
+    }
+
+    /// `hello` on `conn`, once per `Client`: what it shows is kept. Whether
+    /// it answered.
+    fn probe(&self, conn: &mut Conn) -> bool {
+        let info = conn.hello().ok();
+        self.note(info.as_ref());
+        info.is_some()
+    }
+
+    fn note(&self, info: Option<&HelloInfo>) {
+        let _ = self.version_mismatch.set(info.and_then(detect_skew));
+        let _ = self.refused.set(info.and_then(incompatible));
+    }
+
+    /// The refusal of a daemon this client cannot talk to, once known.
+    fn refuse(&self) -> Result<(), CombError> {
+        match self.refused.get() {
+            Some(Some(theirs)) => Err(refusal(theirs)),
+            _ => Ok(()),
+        }
     }
 
     /// Override the socket path (bypassing auto-discovery). Primarily
@@ -642,7 +712,12 @@ impl Client {
             connect_timeout: self.connect_timeout,
             timeout: self.config.timeout,
         };
-        let stream = WatchStream::new(self.open()?.reader.into_inner(), Some(probe))?;
+        let mut conn = self.open()?;
+        if self.version_mismatch.get().is_none() && !self.probe(&mut conn) {
+            conn = self.open()?;
+        }
+        self.refuse()?;
+        let stream = WatchStream::new(conn.reader.into_inner(), Some(probe))?;
         stream.send(&watch_request(key, path)?)?;
         Ok(stream)
     }
@@ -659,11 +734,11 @@ impl Client {
     }
 
     /// Ask the daemon for its protocol and build versions.
+    /// It answers whatever the daemon speaks: the refusal is every other
+    /// op's.
     pub fn hello(&self) -> Result<HelloInfo, CombError> {
         let info = self.open()?.hello()?;
-        if self.version_mismatch.get().is_none() {
-            let _ = self.version_mismatch.set(detect_skew(&info));
-        }
+        self.note(Some(&info));
         Ok(info)
     }
 
@@ -870,6 +945,9 @@ pub struct Session {
     /// after this session's first op. Checked once per connection, not
     /// per op.
     version_mismatch: Option<VersionMismatch>,
+    /// The daemon's protocol version, when the probe showed this client
+    /// cannot talk to it: every op is refused.
+    refused: Option<String>,
     /// The directory [`Session::set_context`] set, sent with every request
     /// that names no path.
     context: Option<String>,
@@ -886,6 +964,7 @@ impl Session {
             allow_exec,
             skew_checked: false,
             version_mismatch: None,
+            refused: None,
             context: None,
             log: None,
         }
@@ -906,14 +985,19 @@ impl Session {
     }
 
     /// One request on this connection, answered: the reply's envelope. The
-    /// first call probes for version skew after the caller's own exchange,
-    /// as [`Client`]'s does, once per connection.
+    /// first call sends a `hello` before it, as [`Client`]'s does, once per
+    /// connection: a daemon whose protocol major is not ours is refused.
     fn call(&mut self, request: &Request) -> Result<Response, CombError> {
-        let line = self.conn.exchange(request)?;
         if !self.skew_checked {
             self.skew_checked = true;
-            self.version_mismatch = self.conn.skew();
+            let info = self.conn.hello().ok();
+            self.version_mismatch = info.as_ref().and_then(detect_skew);
+            self.refused = info.as_ref().and_then(incompatible);
         }
+        if let Some(theirs) = &self.refused {
+            return Err(refusal(theirs));
+        }
+        let line = self.conn.exchange(request)?;
         envelope(&line, self.version_mismatch.as_ref())
     }
 
@@ -1007,6 +1091,7 @@ impl Session {
         if !self.skew_checked {
             self.skew_checked = true;
             self.version_mismatch = detect_skew(&info);
+            self.refused = incompatible(&info);
         }
         Ok(info)
     }

@@ -224,6 +224,7 @@ kind from a newer library is a bare `CombError` with the kind kept.
 | `ParseError` | `parse_error` | A request, a response or a template could not be read |
 | `ServerError` | `server_error` | The daemon refused the request, or a template failed to render |
 | `TimeoutError` | `timeout` | A read or write ran out `timeoutMs`, or `nextEvent` ran out its timeout |
+| `ProtocolMismatchError` | `protocol_mismatch` | The daemon speaks a protocol whose major is not the library's; restart the daemon (`comb kill`) or upgrade the library |
 | `BusyError` | `busy` | A session or watch is in use by another caller |
 | `PanicError` | `panic` | The native library panicked (caught at the FFI boundary) |
 | `LibraryNotFoundError` | `library_not_found` | No `libbeachcomber` was found (FFI), or no `comb` to spawn (subprocess) |

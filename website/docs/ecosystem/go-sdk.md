@@ -165,6 +165,7 @@ Every error is an `*Error`: `Kind` (the table's slug), `Message` (the library's 
 | `ErrParse` | `parse_error` |
 | `ErrServer` | `server_error` |
 | `ErrTimeout` | `timeout` |
+| `ErrProtocolMismatch` | `protocol_mismatch` |
 | `ErrBusy` | `busy` |
 | `ErrPanic` | `panic` |
 | `ErrLibraryNotFound` | `library_not_found` |

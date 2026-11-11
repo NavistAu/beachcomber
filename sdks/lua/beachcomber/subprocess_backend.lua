@@ -171,6 +171,18 @@ local function line_after(stderr, prefix)
   return nil
 end
 
+--- `comb`'s refusal of a daemon whose protocol major is not its own, as the
+-- envelope the ffi tier gives it (`protocol_mismatch`), or nil.
+local function protocol_refusal(stderr)
+  for line in (stderr or ""):gmatch("[^\n]+") do
+    local at = line:find("the daemon speaks protocol ", 1, true)
+    if at and line:find("which cannot talk", 1, true) then
+      return { ok = false, error = { kind = "protocol_mismatch", message = line:sub(at) } }
+    end
+  end
+  return nil
+end
+
 --- Parse `comb status -f json` output (one JSON object per line) into an
 -- array of row tables.
 --
@@ -254,6 +266,8 @@ function Backend:get(key, cwd, env, options)
   local out, ok, err = run(cmd)
 
   if not ok then
+    local mismatch = protocol_refusal(err)
+    if mismatch then return mismatch end
     err = err or ""
     -- comb's usage error for `--wait`: the library's words after the flag.
     local refused = err:match("error: invalid value '[^\n]*' for '%-%-wait <[^>]*>': ([^\n]*)")
@@ -290,6 +304,8 @@ function Backend:eval(template, cwd, env)
   local cmd = command(self, " eval -f json" .. path_arg(cwd) .. " -- " .. shell_escape(template), env, true)
   local out, ok, err = run(cmd)
   if not ok then
+    local mismatch = protocol_refusal(err)
+    if mismatch then return mismatch end
     err = (err or ""):gsub("%s+$", "")
     -- The CLI failed before answering at all: no daemon, a bad argument.
     if err == "" or err:sub(1, #"error: daemon:") == "error: daemon:" then
@@ -317,6 +333,8 @@ function Backend:put(key, data, ttl, path, persist)
   if persist then cmd = cmd .. " --persist" end
   local _, ok, err = run(cmd)
   if not ok then
+    local mismatch = protocol_refusal(err)
+    if mismatch then return mismatch end
     return { ok = false, error = { kind = "server_error", message = (err or ""):gsub("%s+$", "") } }
   end
   return { ok = true }
@@ -332,6 +350,8 @@ function Backend:refresh(key, path)
   local cmd = command(self, " refresh " .. shell_escape(key) .. path_arg(path))
   local _, ok, err = run(cmd)
   if not ok then
+    local mismatch = protocol_refusal(err)
+    if mismatch then return mismatch end
     err = err or ""
     local message = line_after(err, "error: " .. key .. ": ") or err:gsub("%s+$", "")
     return { ok = false, error = { kind = "server_error", message = message } }
@@ -341,6 +361,8 @@ end
 
 function Backend:status()
   local rows, err = status_rows(self)
+  local mismatch = not rows and protocol_refusal(err)
+  if mismatch then return mismatch end
   if not rows then
     return { ok = false, error = { kind = "server_error", message = err ~= "" and err or "comb status failed" } }
   end

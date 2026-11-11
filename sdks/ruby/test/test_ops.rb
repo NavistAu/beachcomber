@@ -13,12 +13,14 @@ class TestOps < Minitest::Test
   # --- hello ---
 
   def test_hello_sends_correct_op
+    @server.serve_hello
     @server.enqueue('{"ok":true,"data":{"protocol_version":"1","daemon_version":"0.5.0"}}')
     @client.hello
     assert_equal 'hello', @server.requests.last['op']
   end
 
   def test_hello_returns_hello_info
+    @server.serve_hello
     @server.enqueue('{"ok":true,"data":{"protocol_version":"1","daemon_version":"0.5.0"}}')
     info = @client.hello
     assert_instance_of Beachcomber::HelloInfo, info
@@ -30,6 +32,7 @@ class TestOps < Minitest::Test
   # daemon_version must both be present (libbeachcomber::parse_hello_response),
   # unlike the pre-ABI Ruby client which defaulted missing fields to "".
   def test_hello_missing_data_fields_raises_parse_error
+    @server.serve_hello
     @server.enqueue('{"ok":true,"data":{}}')
     assert_raises(Beachcomber::ParseError) { @client.hello }
   end

@@ -19,8 +19,24 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixListener;
 use std::path::PathBuf;
 
-/// Bind a socket and, on the first connection, read one request line and
-/// reply with a single scripted response line.
+/// Read the next request line, answering the `hello` a client sends first
+/// on a connection as a daemon of this protocol does.
+fn read_past_hello(reader: &mut BufReader<std::os::unix::net::UnixStream>) -> String {
+    let mut line = String::new();
+    let _ = reader.read_line(&mut line);
+    if line.contains(r#""op":"hello""#) {
+        let hello = serde_json::json!({"ok": true, "data": {
+            "protocol_version": libbeachcomber::protocol::PROTOCOL_VERSION,
+            "daemon_version": libbeachcomber::VERSION}});
+        let _ = reader.get_mut().write_all(format!("{hello}\n").as_bytes());
+        line.clear();
+        let _ = reader.read_line(&mut line);
+    }
+    line
+}
+
+/// Bind a socket and, on the first connection, read one request line (past
+/// its `hello`) and reply with a single scripted response line.
 fn spawn_canned_responder(response: &'static str) -> (tempfile::TempDir, PathBuf) {
     let tmp = tempfile::tempdir().unwrap();
     let sock = tmp.path().join("sock");
@@ -28,8 +44,7 @@ fn spawn_canned_responder(response: &'static str) -> (tempfile::TempDir, PathBuf
     std::thread::spawn(move || {
         if let Ok((stream, _)) = listener.accept() {
             let mut reader = BufReader::new(stream);
-            let mut line = String::new();
-            let _ = reader.read_line(&mut line);
+            read_past_hello(&mut reader);
             let mut stream = reader.into_inner();
             let _ = stream.write_all(format!("{response}\n").as_bytes());
         }
@@ -119,8 +134,7 @@ fn a_dropped_connection_says_so() {
     let listener = UnixListener::bind(&sock).unwrap();
     std::thread::spawn(move || {
         if let Ok((stream, _)) = listener.accept() {
-            let mut line = String::new();
-            let _ = BufReader::new(stream).read_line(&mut line);
+            read_past_hello(&mut BufReader::new(stream));
         }
     });
     let err = client_for(&sock).refresh("p", None).unwrap_err();

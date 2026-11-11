@@ -173,6 +173,7 @@ One `CombError` subclass per error kind of the [SDK API table](https://github.co
 | `ParseError` | `parse_error` | A request, a response or a template could not be read |
 | `ServerError` | `server_error` | The daemon refused the request, or a template failed to render |
 | `TimeoutError` | `timeout` | A read or write ran out `timeout_ms`, or `next_event` ran out its `timeout_ms` |
+| `ProtocolMismatchError` | `protocol_mismatch` | The daemon speaks a protocol whose major is not the library's; restart the daemon (`comb kill`) or upgrade the library |
 | `BusyError` | `busy` | A session or watch is in use by another caller |
 | `PanicError` | `panic` | The library panicked |
 | `LibraryNotFoundError` | `library_not_found` | No `libbeachcomber` was found where discovery looks |

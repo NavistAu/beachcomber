@@ -32,6 +32,7 @@
     "parse_error",
     "server_error",
     "timeout",
+    "protocol_mismatch",
     "busy",
     "panic",
     "library_not_found",

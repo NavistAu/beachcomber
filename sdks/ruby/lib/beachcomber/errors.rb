@@ -36,6 +36,7 @@ module Beachcomber
   define_error :ParseError, 'parse_error'
   define_error :ServerError, 'server_error'
   define_error :TimeoutError, 'timeout'
+  define_error :ProtocolMismatchError, 'protocol_mismatch'
   define_error :BusyError, 'busy'
   define_error :PanicError, 'panic'
   define_error :LibraryNotFoundError, 'library_not_found'

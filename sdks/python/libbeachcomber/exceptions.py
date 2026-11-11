@@ -70,6 +70,13 @@ class TimeoutError(CombError):  # noqa: A001 - deliberately mirrors the ABI's "t
     kind = "timeout"
 
 
+class ProtocolMismatchError(CombError):
+    """The daemon speaks a protocol whose major is not this library's: restart
+    the daemon, or upgrade the library. The message names both versions."""
+
+    kind = "protocol_mismatch"
+
+
 class BusyError(CombError):
     """A session or watch is in use by another caller."""
 
@@ -111,6 +118,7 @@ _KIND_TO_EXCEPTION = {
         ParseError,
         ServerError,
         TimeoutError,
+        ProtocolMismatchError,
         BusyError,
         PanicError,
         LibraryNotFoundError,

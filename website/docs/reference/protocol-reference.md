@@ -17,7 +17,7 @@ Socket path resolution order:
 Connect with `AF_UNIX`, `SOCK_STREAM`. Each request is one line: a JSON object followed by `\n`. Each response is one line the same way. There is no framing beyond the newline.
 
 1. **Connect.**
-2. **Handshake (recommended):** send `hello` and check that the returned `protocol_version` is compatible with the one the client was built against ([Versioning](#versioning)). The daemon does not require it; a client that skips it has no signal when the daemon advertises a breaking change.
+2. **Handshake (recommended):** send `hello` and check that the returned `protocol_version` has the major the client was built against ([Versioning](#versioning)); the shipped clients refuse a daemon whose major differs. The daemon does not require it; a client that skips it has no signal when the daemon advertises a breaking change.
 3. **Interact:** send one or more ops, read one response per op, in any order.
 4. **Close:** close the socket. The daemon sends no goodbye.
 
@@ -131,7 +131,7 @@ Response:
 {"ok":true,"data":{"daemon_version":"0.10.1","protocol_version":"2.0"},"age_ms":0}
 ```
 
-`protocol_version` follows semver (major.minor) and is independent of `daemon_version`, the daemon binary's build version. It is `2.0` from comb 0.11.0: `1.0` had not moved since `hello` was added, though ops were added and the wire broke. A client should treat another major as a daemon it cannot talk to. The shipped clients do not yet: they compare `daemon_version` only, and a mismatch is reported, not refused.
+`protocol_version` follows semver (major.minor) and is independent of `daemon_version`, the daemon binary's build version. It is `2.0` from comb 0.11.0: `1.0` had not moved since `hello` was added, though ops were added and the wire broke. A client refuses a daemon whose major is not its own; a minor difference talks. libbeachcomber (and through it `comb`, the C ABI and every SDK) sends `hello` before a connection's first request (once per client, once per session) and answers every op on such a daemon with the error kind `protocol_mismatch`, naming both versions: `the daemon speaks protocol 1.0 and this client 2.0, which cannot talk: restart the daemon (comb kill; the next query starts this release's)`, or, for a newer daemon, `upgrade this client to one that speaks it`. `hello` itself still answers. A different `daemon_version` alone is skew, reported and not refused.
 
 ### `get`
 

@@ -47,9 +47,15 @@ class MockServer
     @requests = []
     @mutex    = Mutex.new
     @recorded = ConditionVariable.new
+    @answer_probe = true
     @server   = UNIXServer.new(@path)
     @thread   = Thread.new { serve }
     @thread.abort_on_exception = true
+  end
+
+  # The test asks hello itself: the queued response answers it, as any op's.
+  def serve_hello
+    @answer_probe = false
   end
 
   # Push a raw JSON string (without newline) to be sent as the next response.
@@ -88,27 +94,23 @@ class MockServer
     end
   end
 
-  # The shared client probes the daemon for version skew via a trailing
-  # `hello` exchange immediately after a connection's first request/response
+  # The shared client sends a `hello` before a connection's first request
   # (Client: once per Client instance; Session: once per connection) — see
-  # `probe_skew_after` in libbeachcomber/src/lib.rs. It is not part of what
-  # any test is exercising, so it is answered here transparently: neither
-  # recorded in #requests nor allowed to consume a queued response meant for
-  # the caller's own next op.
+  # `Client::call` in libbeachcomber/src/lib.rs — and refuses a daemon whose
+  # protocol major is not its own. It is not part of what any test is
+  # exercising, so it is answered here as this protocol's daemon would:
+  # neither recorded in #requests nor allowed to consume a queued response
+  # meant for the caller's own op. A test of hello itself says so
+  # (#serve_hello).
   def handle(conn)
     request_index = 0
-    first_op = nil
-    probe_handled = false
 
     conn.each_line do |line|
       req = JSON.parse(line.chomp)
       request_index += 1
 
-      if request_index == 1
-        first_op = req['op']
-      elsif request_index == 2 && !probe_handled && first_op != 'hello' && req['op'] == 'hello'
-        probe_handled = true
-        conn.write(%({"ok":true,"data":{"protocol_version":"1","daemon_version":"0.0.0-mock"}}\n))
+      if request_index == 1 && req['op'] == 'hello' && @answer_probe
+        conn.write(%({"ok":true,"data":{"protocol_version":"2.0","daemon_version":"0.0.0-mock"}}\n))
         next
       end
 

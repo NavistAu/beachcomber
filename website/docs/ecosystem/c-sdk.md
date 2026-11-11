@@ -129,6 +129,7 @@ so a binding can tell the cases apart without string matching:
 | `parse_error` | Malformed response from the daemon |
 | `server_error` | Daemon returned `ok: false` |
 | `timeout` | The call exceeded its timeout — any op, on a client or a session |
+| `protocol_mismatch` | The daemon speaks a protocol whose major is not the library's: every op is refused, naming both versions. Restart the daemon (`comb kill`), or upgrade the library |
 | `busy` | The handle's connection is already in use by another caller |
 | `panic` | The call panicked internally; caught at the FFI boundary |
 

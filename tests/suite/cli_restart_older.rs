@@ -28,6 +28,11 @@ struct FakeDaemon {
 
 impl FakeDaemon {
     fn serve(socket: &Path, version: &'static str) -> Self {
+        Self::serve_speaking(socket, version, libbeachcomber::protocol::PROTOCOL_VERSION)
+    }
+
+    /// [`Self::serve`], whose `hello` says it speaks `protocol`.
+    fn serve_speaking(socket: &Path, version: &'static str, protocol: &'static str) -> Self {
         std::fs::create_dir_all(socket.parent().unwrap()).unwrap();
         let listener = UnixListener::bind(socket).unwrap();
         let mut sleep = std::process::Command::new("sleep")
@@ -45,7 +50,9 @@ impl FakeDaemon {
                         break;
                     }
                     let socket = socket.clone();
-                    std::thread::spawn(move || answer(stream.unwrap(), version, pid, &socket));
+                    std::thread::spawn(move || {
+                        answer(stream.unwrap(), version, protocol, pid, &socket)
+                    });
                 }
             })
         };
@@ -83,7 +90,7 @@ impl Drop for FakeDaemon {
     }
 }
 
-fn answer(stream: UnixStream, version: &str, pid: i32, socket: &str) {
+fn answer(stream: UnixStream, version: &str, protocol: &str, pid: i32, socket: &str) {
     let mut writer = stream.try_clone().unwrap();
     for line in BufReader::new(stream).lines() {
         let Ok(line) = line else { return };
@@ -91,7 +98,7 @@ fn answer(stream: UnixStream, version: &str, pid: i32, socket: &str) {
         let response = match request["op"].as_str() {
             Some("hello") => serde_json::json!({
                 "ok": true,
-                "data": {"protocol_version": libbeachcomber::protocol::PROTOCOL_VERSION, "daemon_version": version},
+                "data": {"protocol_version": protocol, "daemon_version": version},
             }),
             Some("introspect") if request["subject"] == "daemon" => serde_json::json!({
                 "ok": true,
@@ -205,4 +212,20 @@ fn status_warns_of_an_older_daemon_and_leaves_it() {
     );
     assert!(!stderr.contains("restarted daemon"), "stderr: {stderr}");
     assert!(fake.running(), "status did not stop the daemon");
+}
+
+/// A daemon of another protocol major is refused, by every query: comb
+/// names both versions and does not send it the op.
+#[test]
+fn a_daemon_of_another_protocol_major_is_refused() {
+    let env = Isolated::new();
+    let fake = FakeDaemon::serve_speaking(&env.socket.path, "999.0.0", "3.0");
+    for args in [&["put", "x.y", "1"][..], &["get", "x.y"], &["refresh", "x"]] {
+        let out = env.comb(args);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(!out.status.success(), "{args:?}: {stderr}");
+        assert!(stderr.contains("speaks protocol 3.0"), "{args:?}: {stderr}");
+        assert!(!stderr.contains(REFUSED), "never sent the op: {stderr}");
+    }
+    assert!(fake.running());
 }

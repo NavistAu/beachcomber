@@ -10,7 +10,7 @@
 local Error = {}
 Error.__index = Error
 
---- Every kind an Error can have, the table's `error_kinds`: the ABI's ten,
+--- Every kind an Error can have, the table's `error_kinds`: the ABI's nine,
 -- then the three this SDK raises itself.
 Error.KINDS = {
   "daemon_not_running",
@@ -19,6 +19,7 @@ Error.KINDS = {
   "parse_error",
   "server_error",
   "timeout",
+  "protocol_mismatch",
   "busy",
   "panic",
   "library_not_found",
