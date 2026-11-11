@@ -1,0 +1,193 @@
+{
+  "protocol_version": "2.0",
+  "shape": {
+    "enums": {
+      "introspect_subject": [
+        "daemon",
+        "providers",
+        "config",
+        "cache",
+        "lifecycle",
+        "watches",
+        "timers",
+        "demand",
+        "procs"
+      ],
+      "level": [
+        "debug",
+        "info",
+        "warn",
+        "error",
+        "fatal"
+      ],
+      "row_kind": [
+        {
+          "decay": "number",
+          "depth": "number",
+          "kind": "lifecycle",
+          "watches_files": "bool"
+        },
+        {
+          "kind": "once"
+        },
+        {
+          "kind": "static"
+        },
+        {
+          "kind": "transient"
+        },
+        {
+          "kind": "rendered"
+        }
+      ],
+      "wait": [
+        null,
+        "1s500ms",
+        "forever"
+      ]
+    },
+    "hello": {
+      "daemon_version": "string",
+      "protocol_version": "string"
+    },
+    "introspect_daemon": {
+      "active_watchers": "number",
+      "cache_entries": "number",
+      "config_path": "string",
+      "in_flight": "number",
+      "pid": "number",
+      "reaper": {
+        "armed": "bool",
+        "kill_denied": "number",
+        "reaped": "number",
+        "sweeps": "number",
+        "visibility": "string"
+      },
+      "requests_total": "number",
+      "socket_path": "string",
+      "uptime_secs": "number",
+      "verdicts": [
+        {
+          "level": "string",
+          "message": "string"
+        }
+      ],
+      "version": "string",
+      "watch_backend": "string"
+    },
+    "request": {
+      "get": {
+        "force": "bool",
+        "key": "string",
+        "log": "string",
+        "op": "get",
+        "path": "string",
+        "wait": "string"
+      },
+      "hello": {
+        "op": "hello"
+      },
+      "introspect": {
+        "duration_secs": "number",
+        "op": "introspect",
+        "subject": "string"
+      },
+      "layers": {
+        "key": "string",
+        "op": "layers",
+        "path": "string"
+      },
+      "memo": {
+        "data": "string",
+        "hash": "string",
+        "key": "string",
+        "log": [
+          {
+            "count": "number",
+            "key": "string",
+            "level": "string",
+            "msg": "string",
+            "origin": "string",
+            "path": "string"
+          }
+        ],
+        "op": "memo",
+        "path": "string",
+        "ttl": "string",
+        "watch": [
+          "string"
+        ]
+      },
+      "put": {
+        "data": {
+          "f": "number"
+        },
+        "key": "string",
+        "op": "put",
+        "path": "string",
+        "persist": "bool",
+        "ttl": "string"
+      },
+      "refresh": {
+        "key": "string",
+        "op": "refresh",
+        "path": "string"
+      },
+      "status": {
+        "op": "status"
+      },
+      "watch": {
+        "key": "string",
+        "op": "watch",
+        "path": "string"
+      }
+    },
+    "response": {
+      "age_ms": "number",
+      "data": "string",
+      "error": "string",
+      "log": [
+        {
+          "count": "number",
+          "key": "string",
+          "level": "string",
+          "msg": "string",
+          "origin": "string",
+          "path": "string"
+        }
+      ],
+      "memo": {},
+      "ok": "bool",
+      "rest": "string",
+      "template": "string",
+      "var": {},
+      "var_memo": {}
+    },
+    "status_row": {
+      "age_ms": "number",
+      "failure": {
+        "consecutive_failures": "number",
+        "last_error": "string",
+        "stopped": "bool",
+        "suppressed_until_unix_ms": "number"
+      },
+      "field": "string",
+      "kind": {
+        "decay": "number",
+        "depth": "number",
+        "kind": "lifecycle",
+        "watches_files": "bool"
+      },
+      "next_poll_in_secs": "number",
+      "path": "string",
+      "poll_count": "number",
+      "poll_interval_secs": "number",
+      "polls_elapsed": "number",
+      "provider": "string",
+      "shadowed": "bool",
+      "source": "string",
+      "value": "string",
+      "warn": "string"
+    }
+  }
+}

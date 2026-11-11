@@ -12,3 +12,4 @@ mod timeouts;
 mod typed_shapes;
 mod version_mismatch;
 mod watch_resolved;
+mod wire_shape;

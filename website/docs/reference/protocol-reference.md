@@ -449,4 +449,6 @@ The wire protocol is JSON-only — there is no `format` field, and a request tha
 | Change an existing field's type or semantics | Major |
 | Change wire encoding | Major |
 
+A test holds the number to the wire: `libbeachcomber/tests/wire_shape.json` is the shape of every request and of the response structs, taken at the version it names, and the suite fails when the shape changes while `PROTOCOL_VERSION` does not. Bump the version as the table says, then refresh the snapshot with `UPDATE_WIRE_SHAPE=1 cargo nextest run -p libbeachcomber -E 'test(wire_shape)'`.
+
 The [versioning policy](../about/versioning-policy.md) covers the rest of the public surface. The `hello` handshake exists so clients can detect incompatibility at connection time rather than at first-op failure.
