@@ -308,7 +308,7 @@ A rendered row is marked in its VALUE cell: cyan when colour is on, a `▸ ` lea
 
 Rendering resolves with this shell's own environment and directory, and `_.exec()` is enabled, as for `comb get`, `comb eval` and `comb watch`.
 
-In the `human`/`table` preset, SOURCE takes its whole width while the row fits: a `config(<file>)` label names its file whole, home written as `~`. Only when the row is still wider than `--max-width` with VALUE, FIELD and PATH cut to their floors is SOURCE cut, from the middle (`config(~/.con…/defaults/aws.toml)`), down to 24 characters (less at a narrow `--max-width`), so the file name stays; `--no-trunc` never cuts it.
+In the `human`/`table` preset, SOURCE takes its whole width while the row fits: a `config(<file>)` label names its file whole, home written as `~`. Only when the row is still wider than `--max-width` with VALUE, FIELD and PATH cut to their floors is SOURCE cut, from the middle (`config(~/.con…/defaults/aws.toml)`), down to 24 characters (less at a narrow `--max-width`), so the file name stays; `--no-trunc` never cuts it. Under `--tree` (and `comb get -v`) FIELD is as wide as its widest layer label (`└─ :template shadowed`) before SOURCE, VALUE or PATH is cut, and is cut below that only when the row is still too wide with those at their floors.
 
 ### `--tree`: the layers behind each value
 

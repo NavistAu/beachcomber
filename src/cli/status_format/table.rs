@@ -262,6 +262,9 @@ struct Widths {
     ttl: usize,
     age_raw: usize,
     poll_raw: usize,
+    /// The widest layer row's FIELD (`└─ :template shadowed`): FIELD's floor,
+    /// so a layer's label is whole while the cap allows.
+    layer_field: usize,
 }
 
 impl Widths {
@@ -327,6 +330,7 @@ fn measure(rows: &[CacheRow], mark_of: &dyn Fn(usize) -> Option<ChildMark>, env:
         ttl: HEADERS[TTL_COL_IDX].len(),
         age_raw: 0,
         poll_raw: 0,
+        layer_field: 0,
     };
     for (index, row) in rows.iter().enumerate() {
         let (path, value, tainted) = row_texts(row, env);
@@ -342,7 +346,8 @@ fn measure(rows: &[CacheRow], mark_of: &dyn Fn(usize) -> Option<ChildMark>, env:
         }
         if let Some(mark) = mark_of(index) {
             // A layer row has no PROVIDER, POLL or TTL of its own.
-            w.field = w.field.max(mark.field(env.ascii).cols());
+            w.layer_field = w.layer_field.max(mark.field(env.ascii).cols());
+            w.field = w.field.max(w.layer_field);
             w.value = w.value.max(value.cols() + taint_width);
             w.age = w
                 .age
@@ -406,8 +411,14 @@ fn fit(w: &mut Widths, total_cap: usize, shape: &Shape) -> Caps {
     // Two spaces between each pair of columns drawn, and both margins.
     let seps = 2 * shape.cols.len().saturating_sub(1) + 2 * shape.margin;
     let fixed = |w: &Widths| w.provider + w.source + w.age + w.poll + w.ttl + seps;
-    let flex_floors =
-        MIN_FIELD_WIDTH.min(w.field) + MIN_PATH_WIDTH.min(w.path) + MIN_VALUE_WIDTH.min(w.value);
+    // A floor never widens a column past what it actually needs, hence the
+    // `.min(w.*)` on each. FIELD's is wide enough for every layer label, cut
+    // below that only when VALUE, PATH and SOURCE at their floors leave no room.
+    let path_floor = MIN_PATH_WIDTH.min(w.path);
+    let value_floor = MIN_VALUE_WIDTH.min(w.value);
+    let field_least = MIN_FIELD_WIDTH.min(w.field);
+    let field_want = field_least.max(w.layer_field);
+    let flex_floors = field_want + path_floor + value_floor;
     // SOURCE is cut only by what the row still overflows with FIELD, PATH
     // and VALUE at their floors, down to its own ([`MAX_SOURCE_WIDTH`]): a
     // config file's name outlasts the rest of a long value.
@@ -435,16 +446,15 @@ fn fit(w: &mut Widths, total_cap: usize, shape: &Shape) -> Caps {
             ..Caps::default()
         };
     }
-    // A floor never widens a column past what it actually needs, hence the
-    // `.min(w.*)` on each.
-    let field_floor = MIN_FIELD_WIDTH.min(w.field);
-    let path_floor = MIN_PATH_WIDTH.min(w.path);
+    let field_floor = field_want
+        .min(flex.saturating_sub(path_floor + value_floor))
+        .max(field_least);
 
     let field_w = w.field.min((flex * 2 / 5).max(field_floor));
     let value_w = w
         .value
         .min(flex.saturating_sub(field_w + path_floor))
-        .max(MIN_VALUE_WIDTH.min(w.value));
+        .max(value_floor);
     let path_w = w
         .path
         .min(flex.saturating_sub(value_w + field_w))
@@ -873,6 +883,50 @@ mod tests {
         );
         assert_eq!(display.len(), 2, "the memo is the row: {display:?}");
         assert!(marks[1].is_some_and(|m| m.template && m.last));
+    }
+
+    /// A layer's label (`└─ :template shadowed`) is wider than FIELD's
+    /// floor: it stays whole while VALUE and SOURCE can be cut instead.
+    #[test]
+    fn a_layer_label_is_whole_before_value_or_source_is_cut() {
+        use crate::cache::LayerRecord;
+        let row = CacheRow {
+            source: "memo".into(),
+            kind: Some(crate::cache::RowKind::Rendered),
+            field: "m.v".into(),
+            value: "v".into(),
+            failure: None,
+            ..failing_row("")
+        };
+        let layer = |facet: &str, answered: bool| LayerRecord {
+            label: "config(/home/someone/.config/beachcomber/config.toml)".into(),
+            facet: Some(facet.into()),
+            path: None,
+            value: "{{ 'v' | cache() | default(_.log.warn('computed')) }}".into(),
+            age_ms: 0,
+            answered,
+        };
+        let (display, marks) = tree_display_rows(
+            &[row],
+            &[vec![layer("memo", true), layer("template", false)]],
+        );
+        let draw_at = |width: usize| {
+            draw(
+                &display,
+                &marks,
+                false,
+                Some(width),
+                false,
+                &read_shape(false),
+            )
+        };
+        let out = draw_at(90);
+        assert!(out.contains("└─ :template shadowed  "), "{out}");
+        for line in out.lines() {
+            assert!(line.cols() <= 90, "{} cols: {line}", line.cols());
+        }
+        // Too narrow even with the rest at their floors, FIELD is cut too.
+        assert!(!draw_at(50).contains(":template shadowed"));
     }
 
     #[test]
