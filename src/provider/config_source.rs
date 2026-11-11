@@ -364,6 +364,9 @@ impl ConfigSource {
             ResultSpec::Fields(pairs) => {
                 let mut fields = Vec::new();
                 for (name, _) in pairs {
+                    if let Some(reason) = libbeachcomber::key::field_error(name) {
+                        return Err(load_error("result", &format!("field name: {reason}")));
+                    }
                     if name.is_empty() || name.starts_with('<') {
                         return Err(load_error(
                             "result",
@@ -1034,6 +1037,12 @@ mod tests {
         sp.root = None;
         sp.recorded = Schedule::watch(vec![], vec!["/etc/hosts".into()]);
         assert!(!source(sp).has_root());
+    }
+
+    #[test]
+    fn a_result_field_named_underscore_is_refused() {
+        let err = new_err(spec(None, "1", fields(&[("_", "{{ data }}")])));
+        assert!(err.contains("'_' is reserved"), "{err}");
     }
 
     #[test]

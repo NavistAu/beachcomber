@@ -289,6 +289,12 @@ impl Reader {
                 ));
                 continue;
             }
+            if let Some(reason) = libbeachcomber::key::field_error(key) {
+                self.err(format!(
+                    "[client.providers.{provider}] template '{addressed}': {reason}"
+                ));
+                continue;
+            }
             if prefix.is_empty() && key == VAR_NODE {
                 self.err(format!(
                     "[client.providers.{provider}] template.{VAR_NODE} is reserved: a binding \
@@ -679,6 +685,17 @@ mod tests {
 
     fn read_text(text: &str) -> Seeded {
         read(Path::new("/f.toml"), &toml::from_str(text).unwrap())
+    }
+
+    #[test]
+    fn a_template_leaf_or_group_named_underscore_is_refused() {
+        let read = read_text("[client.providers.q]\ntemplate.g._ = 'x'\ntemplate.ok = 'y'\n");
+        assert_eq!(read.errors.len(), 1, "{:?}", read.errors);
+        assert!(
+            read.errors[0].contains("template 'g._'"),
+            "{:?}",
+            read.errors
+        );
     }
 
     /// A macro library is a string named by the name rule; anything else is

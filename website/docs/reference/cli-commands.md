@@ -404,6 +404,8 @@ A template is checked as the configuration's are: every `:template` leaf must be
 
 **Decay depth:** the one `:cache` key a put may write is a decay prototype — `comb p '*:cache._.decay' 3` for every provider, `comb p 'git:cache._.decay' 6` for one, `--path` to scope either to a directory and below. The nearest prototype wins.
 
+**No field is named `_`.** `_` is a node's own, as the decay prototype and the metadata `comb get -v` keeps at each node are, so a put whose key or value names a field `_` is refused (`'_' is reserved: …`), and so is a template or a Source `result` field of that name at load. A Source whose whole `result` is an object with a `_` member is not checked.
+
 **Path:** `put` defaults to the current working directory, exactly as `get` does, so a plain `comb p` followed by a plain `comb g` in the same directory round-trips. `--global` writes `$HOME`, the entry every directory's chain ends at, which is how you publish one value for the whole machine; it cannot be combined with a path ([Addressing a directory](#addressing-a-directory)).
 
 ### Session-scoped entries

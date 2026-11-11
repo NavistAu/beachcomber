@@ -309,6 +309,17 @@ pub fn reserved(name: &str) -> Option<String> {
     Some(format!("'{name}' is reserved: {meaning}"))
 }
 
+/// The one segment no field is named, and why: `_` is a node's own in every
+/// facet, as `<p>:cache._.decay` is and as `comb get -v` keeps each node's
+/// metadata. One rule for a `put`, a config `result` and a template.
+pub const NOT_A_FIELD: &str =
+    "'_' is reserved: it names a node's own settings and metadata (<p>:cache._.decay)";
+
+/// Why `segment` cannot name a field, or `None` when it can.
+pub fn field_error(segment: &str) -> Option<&'static str> {
+    (segment == "_").then_some(NOT_A_FIELD)
+}
+
 /// Refuse a head whose base no provider could have: a [`reserved`] word, or a
 /// name [`name_error`] refuses. `*:cache` is the one such head a key names: the
 /// abstract provider's decay prototype. The same rule decides a config table's
@@ -550,6 +561,13 @@ mod tests {
         assert_eq!(head_of("git.branch"), "git");
         assert_eq!(head_of("mise['x']"), "mise");
         assert_eq!(head_of("git:cache"), "git:cache");
+    }
+
+    #[test]
+    fn underscore_is_no_field() {
+        assert!(field_error("_").is_some());
+        assert_eq!(field_error("__"), None);
+        assert_eq!(field_error("a_b"), None);
     }
 
     #[test]

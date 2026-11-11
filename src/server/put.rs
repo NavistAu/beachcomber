@@ -74,6 +74,17 @@ pub(super) fn memo_write(
     Ok((provider.to_string(), path, field, write))
 }
 
+/// Whether an object anywhere in `data` has a member named `_`.
+fn names_underscore(data: &serde_json::Value) -> bool {
+    match data {
+        serde_json::Value::Object(map) => map
+            .iter()
+            .any(|(k, v)| libbeachcomber::key::field_error(k).is_some() || names_underscore(v)),
+        serde_json::Value::Array(items) => items.iter().any(names_underscore),
+        _ => false,
+    }
+}
+
 /// A `put`: the request's handling, and a persisted put's replay at start
 /// ([`crate::daemon`]), which goes the same way.
 #[allow(clippy::too_many_arguments)]
@@ -139,6 +150,20 @@ pub(crate) async fn put(
                 &data.to_string(),
             ));
         }
+    }
+
+    // `_` names no field, at the address or anywhere in what is written
+    // there; in `:cache` it is the decay prototype.
+    if facet != Some(Facet::Cache)
+        && (libbeachcomber::key::segments(node)
+            .iter()
+            .any(|s| libbeachcomber::key::field_error(s).is_some())
+            || names_underscore(data))
+    {
+        return Response::error(format!(
+            "invalid field in {key}: {}",
+            libbeachcomber::key::NOT_A_FIELD
+        ));
     }
 
     // A template is linted as a configured one is: one that does not

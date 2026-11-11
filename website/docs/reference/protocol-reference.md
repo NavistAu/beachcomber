@@ -273,6 +273,7 @@ Errors:
 - an invalid facet: `invalid facet key: <head> (…)`; a key the grammar cannot read: `invalid key: <key>`
 - a write to a layer facet: `<p>:put and <p>:source are read-only; write <p>.<node>`
 - a write to `<p>:memo`: `<p>:memo is written by cache(); edit <p>:template.<f>, or refresh <p>`
+- a field named `_`, in `key` or anywhere in `data` (outside `:cache`, where `_.decay` is the prototype): `invalid field in <key>: '_' is reserved: …`
 - a write at `<p>:template.var`, or of a `<p>:template` tree holding `var`: `<key>: var is the vars' node, set in [client.providers.<p>] var.<name>; a put does not write a var`
 - a write to `<p>:cache` other than `_.decay`, or a `_.decay` that is not a positive integer: see [The `:cache` facet](#the-cache-facet)
 - a `:template` leaf that is not a string, or a template that does not compile (naming the leaf)
