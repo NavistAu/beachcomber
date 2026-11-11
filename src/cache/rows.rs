@@ -52,6 +52,7 @@ impl Cache {
                         out.push((
                             origin.clone(),
                             CacheRow {
+                                warn: None,
                                 shadowed: false,
                                 provider: provider.clone(),
                                 path: path.clone(),
@@ -97,6 +98,7 @@ impl Cache {
                             out.push((
                                 origin.clone(),
                                 CacheRow {
+                                    warn: None,
                                     shadowed: false,
                                     provider: provider.clone(),
                                     path: path.clone(),
@@ -133,6 +135,7 @@ impl Cache {
                     out.push((
                         origin.clone(),
                         CacheRow {
+                            warn: None,
                             shadowed: false,
                             provider: provider.clone(),
                             path: path.clone(),

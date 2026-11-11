@@ -63,6 +63,7 @@ fn the_cases_share_one_daemon() {
     a_memo_says_why_it_missed_or_hit(&d, &home);
     a_read_of_a_disabled_or_unknown_provider_is_a_warning(&d, &home);
     a_put_says_what_it_hides_replaces_and_stops_keeping(&d, &home);
+    status_and_check_show_a_sources_latest_warning(&d, &home);
 }
 
 fn json(bytes: &[u8]) -> serde_json::Value {
@@ -364,4 +365,32 @@ fn a_put_says_what_it_hides_replaces_and_stops_keeping(d: &TestDaemon, home: &st
         hidden.contains("a template answers here, over the put"),
         "{hidden}"
     );
+}
+
+fn status_and_check_show_a_sources_latest_warning(d: &TestDaemon, home: &std::path::Path) {
+    d.comb(home).args(["get", "s.v"]).assert().success();
+    let status = d.comb(home).arg("status").output().unwrap();
+    let text = String::from_utf8(status.stderr).unwrap();
+    assert!(
+        text.contains("warning: s source(main) at ~: careful"),
+        "{text}"
+    );
+    let json = d
+        .comb(home)
+        .args(["status", "-f", "json"])
+        .output()
+        .unwrap();
+    let rows = json_rows(&json.stdout);
+    assert!(rows.iter().any(|r| r["warn"] == "careful"), "{rows:?}");
+    let check = d.comb(home).args(["check", "providers"]).output().unwrap();
+    let text = String::from_utf8(check.stdout).unwrap();
+    assert!(text.contains("s.main warned at ~: careful"), "{text}");
+}
+
+/// `status -f json`'s rows, one object per line.
+fn json_rows(bytes: &[u8]) -> Vec<serde_json::Value> {
+    String::from_utf8_lossy(bytes)
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect()
 }

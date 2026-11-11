@@ -13,6 +13,7 @@ use beachcomber::cli::status_format::{RenderOpts, render_preset, render_sh_env, 
 fn sample_rows() -> Vec<CacheRow> {
     vec![
         CacheRow {
+            warn: None,
             shadowed: false,
             provider: "git".into(),
             path: Some("/home/me/ws/foo".into()),
@@ -28,6 +29,7 @@ fn sample_rows() -> Vec<CacheRow> {
             failure: None,
         },
         CacheRow {
+            warn: None,
             shadowed: false,
             provider: "git".into(),
             path: Some("/home/me/ws/foo".into()),
@@ -43,6 +45,7 @@ fn sample_rows() -> Vec<CacheRow> {
             failure: None,
         },
         CacheRow {
+            warn: None,
             shadowed: false,
             provider: "hostname".into(),
             path: None,
@@ -147,6 +150,7 @@ fn sh_preset_emits_sourceable_assignments() {
 #[test]
 fn a_wide_value_is_measured_in_columns() {
     let row = |provider: &str, field: &str, value: &str| CacheRow {
+        warn: None,
         shadowed: false,
         provider: provider.into(),
         path: Some("/home/me/ws/foo".into()),
@@ -206,6 +210,7 @@ fn human_preset_truncates_value_to_meet_total_cap() {
     // Use a wider total cap so the VALUE column still gets some chars before truncation.
     let mut rows = sample_rows();
     rows.push(CacheRow {
+        warn: None,
         shadowed: false,
         provider: "git".into(),
         path: Some("/home/me/ws/foo".into()),
@@ -265,6 +270,7 @@ fn a_long_value_takes_the_whole_cap_the_other_columns_leave() {
 fn human_preset_colours_the_age_of_a_failing_row() {
     use beachcomber::cache::FailureSnapshot;
     let rows = vec![CacheRow {
+        warn: None,
         shadowed: false,
         provider: "git".into(),
         path: None,
@@ -309,6 +315,7 @@ fn human_preset_colours_the_age_of_a_failing_row() {
 #[test]
 fn json_preset_path_none_serializes_as_null() {
     let rows = vec![CacheRow {
+        warn: None,
         shadowed: false,
         provider: "hostname".into(),
         path: None,
@@ -335,6 +342,7 @@ fn json_preset_path_none_serializes_as_null() {
 #[test]
 fn csv_preset_quotes_values_with_commas() {
     let rows = vec![CacheRow {
+        warn: None,
         shadowed: false,
         provider: "test".into(),
         path: None,
@@ -371,6 +379,7 @@ fn custom_template_renders_per_row() {
 #[test]
 fn custom_template_supports_truncate_filter() {
     let rows = vec![CacheRow {
+        warn: None,
         shadowed: false,
         provider: "git".into(),
         path: None,
@@ -427,6 +436,7 @@ fn cache_row_kind_serde_round_trip() {
 #[test]
 fn custom_template_supports_age_human() {
     let rows = vec![CacheRow {
+        warn: None,
         shadowed: false,
         provider: "git".into(),
         path: None,
@@ -936,6 +946,7 @@ fn max_width_value_column_shrinks_not_others() {
 
     // One row: long value, short provider/path/field.
     let row = CacheRow {
+        warn: None,
         shadowed: false,
         provider: "git".into(),
         path: Some("/repo".into()),
@@ -983,6 +994,7 @@ fn max_width_total_row_width_does_not_exceed_cap() {
 
     // Row with a long value that would easily blow past a 80-col cap.
     let row = CacheRow {
+        warn: None,
         shadowed: false,
         provider: "mise".into(),
         path: Some("-".into()),
@@ -1084,6 +1096,7 @@ fn cache_row_new_fields_serde_round_trip() {
     use serde_json::json;
 
     let row = CacheRow {
+        warn: None,
         shadowed: false,
         provider: "git".into(),
         path: Some("/repo".into()),
@@ -1458,6 +1471,7 @@ fn human_preset_includes_ttl_column_and_drops_stale() {
     use beachcomber::cli::status_format::{FormatOptions, render_human};
 
     let row = CacheRow {
+        warn: None,
         shadowed: false,
         provider: "git".into(),
         path: Some("/repo".into()),
@@ -1492,6 +1506,7 @@ fn sample_lifecycle_row() -> beachcomber::cache::CacheRow {
     use beachcomber::cache::{CacheRow, RowKind};
     use serde_json::json;
     CacheRow {
+        warn: None,
         shadowed: false,
         provider: "git".into(),
         path: Some("/repo".into()),
@@ -1606,6 +1621,7 @@ fn lc_row(provider: &str, decay: u8) -> beachcomber::cache::CacheRow {
     use beachcomber::cache::{CacheRow, RowKind};
     use serde_json::json;
     CacheRow {
+        warn: None,
         shadowed: false,
         provider: provider.into(),
         path: None,
@@ -1630,6 +1646,7 @@ fn once_row(provider: &str) -> beachcomber::cache::CacheRow {
     use beachcomber::cache::{CacheRow, RowKind};
     use serde_json::json;
     CacheRow {
+        warn: None,
         shadowed: false,
         provider: provider.into(),
         path: None,
@@ -1731,6 +1748,7 @@ fn human_renders_p_zero_k_zero_without_panic() {
     use beachcomber::cache::{CacheRow, RowKind};
     use serde_json::json;
     let row = CacheRow {
+        warn: None,
         shadowed: false,
         provider: "edge".into(),
         path: None,
@@ -1770,6 +1788,7 @@ fn failure_state_renders_warn_and_red_row() {
     use serde_json::json;
 
     let row = CacheRow {
+        warn: None,
         shadowed: false,
         provider: "flaky".into(),
         path: None,
@@ -1814,6 +1833,7 @@ fn render_preset_ascii_flag_swaps_glyphs() {
     use serde_json::json;
 
     let row = CacheRow {
+        warn: None,
         shadowed: false,
         provider: "git".into(),
         path: None,
@@ -1878,6 +1898,7 @@ fn render_preset_color_respects_caller_decision_not_re_anding_with_tty() {
     use serde_json::json;
 
     let row = CacheRow {
+        warn: None,
         shadowed: false,
         provider: "git".into(),
         path: None,
@@ -1928,6 +1949,7 @@ fn human_and_table_presets_write_paths_from_tilde() {
     use serde_json::json;
 
     let row = CacheRow {
+        warn: None,
         shadowed: false,
         provider: "git".into(),
         path: Some("/Users/x/ws/beachcomber".into()),
@@ -1977,6 +1999,7 @@ fn machine_presets_keep_real_path_under_home() {
     use serde_json::json;
 
     let row = CacheRow {
+        warn: None,
         shadowed: false,
         provider: "git".into(),
         path: Some("/home/testuser/ws/beachcomber".into()),
@@ -2025,6 +2048,7 @@ fn human_preset_path_compaction_frees_width_for_value() {
     use serde_json::json;
 
     let row = CacheRow {
+        warn: None,
         shadowed: false,
         provider: "p".into(),
         path: Some("/home/testuser/p".into()),
@@ -2086,6 +2110,7 @@ fn human_preset_path_compaction_frees_width_for_value() {
 /// constraint, so the rendered line is pushed to the cap.
 fn wide_value_row() -> CacheRow {
     CacheRow {
+        warn: None,
         shadowed: false,
         provider: "mise".into(),
         path: Some("/home/me/ws/foo".into()),
@@ -2146,6 +2171,7 @@ fn human_rows_leave_the_right_margin_unpainted() {
     // the row simply overflowed). Budget-aware SOURCE truncation
     // (MAX_SOURCE_WIDTH.min(cap / 5)) leaves enough room that it does not.
     let config_row = beachcomber::cache::CacheRow {
+        warn: None,
         shadowed: false,
         provider: "myapp".into(),
         path: Some("/repo".into()),
@@ -2472,6 +2498,7 @@ fn width_split_gives_value_priority_over_path() {
 
 fn nested_row() -> CacheRow {
     CacheRow {
+        warn: None,
         shadowed: false,
         provider: "agent".into(),
         path: Some("/repo".into()),

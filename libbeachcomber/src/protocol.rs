@@ -500,6 +500,10 @@ pub struct CacheRow {
     /// hides such rows unless asked (`--filter shadowed=true`, `-a`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub shadowed: bool,
+    /// The latest `warn` (or worse) line the Source's stored run raised
+    /// (`_.log.warn`), while that run stands; `None` for any other row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warn: Option<String>,
 }
 
 /// How a row's entry lives: the status formatter's choice of rendering.

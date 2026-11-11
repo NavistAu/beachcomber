@@ -35,6 +35,7 @@ pub(super) async fn handle_status(ctx: &Ctx, registry: &Arc<ProviderRegistry>) -
             rows.push((
                 key.source.clone(),
                 crate::cache::CacheRow {
+                    warn: None,
                     shadowed: false,
                     provider: key.provider.clone(),
                     path: key.path.clone(),
@@ -123,6 +124,16 @@ pub(super) async fn handle_status(ctx: &Ctx, registry: &Arc<ProviderRegistry>) -
 
             // Failure backoff: per-source.
             row.failure = instances.get(&key).and_then(|i| i.failure.clone());
+            // The latest warning its stored run raised.
+            if !is_put && !is_memo {
+                row.warn = registry
+                    .logs
+                    .of(&key)
+                    .into_iter()
+                    .rev()
+                    .find(|l| l.level >= libbeachcomber::protocol::Level::Warn)
+                    .map(|l| l.msg);
+            }
         }
     }
 

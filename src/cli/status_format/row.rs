@@ -127,6 +127,9 @@ pub fn row_context(r: &CacheRow) -> serde_json::Value {
         }
         ctx.insert("failure".into(), serde_json::Value::Object(fobj));
     }
+    if let Some(warn) = &r.warn {
+        ctx.insert("warn".into(), serde_json::json!(warn));
+    }
     serde_json::Value::Object(ctx)
 }
 /// What a row's VALUE cell says: its value, or, for a failing Source with
@@ -256,6 +259,7 @@ pub fn tree_display_rows(
         let layers: Vec<_> = layers.iter().filter(|l| !is_the_row(row, l)).collect();
         for (i, layer) in layers.iter().enumerate() {
             display.push(CacheRow {
+                warn: None,
                 shadowed: false,
                 provider: row.provider.clone(),
                 path: layer.path.clone(),

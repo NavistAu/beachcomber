@@ -777,6 +777,7 @@ mod ttl_cell_tests {
 
     fn lifecycle_row(poll: u64, keep: u32, next: u64) -> CacheRow {
         CacheRow {
+            warn: None,
             shadowed: false,
             provider: "load".into(),
             path: None,

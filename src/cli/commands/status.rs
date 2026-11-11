@@ -172,6 +172,7 @@ fn render_groups(
             out.push((
                 start + i,
                 CacheRow {
+                    warn: None,
                     shadowed: false,
                     provider: provider.clone(),
                     path: Some(cwd.to_string()),
@@ -399,8 +400,35 @@ fn status(
     // Human preset only, and on stderr so machine formats stay parseable.
     if format == &Format::Preset(Preset::Human) {
         warn_if_daemon_degraded(&client);
+        for warning in source_warnings(&rows) {
+            crate::cli::report::warning(warning);
+        }
     }
     Ok(())
+}
+
+/// Each Source instance's latest warning among `rows`, once: `<provider>
+/// <source> at <path>: <msg>`.
+fn source_warnings(rows: &[CacheRow]) -> Vec<String> {
+    let home = libbeachcomber::path::Home::from_env();
+    let mut out: Vec<String> = rows
+        .iter()
+        .filter_map(|r| {
+            let at = r
+                .path
+                .as_deref()
+                .map_or_else(|| "~".into(), |p| home.compact(p));
+            Some(format!(
+                "{} {} at {at}: {}",
+                r.provider,
+                r.source,
+                r.warn.as_ref()?
+            ))
+        })
+        .collect();
+    let mut seen = std::collections::HashSet::new();
+    out.retain(|w| seen.insert(w.clone()));
+    out
 }
 
 /// `--tree` draws the human, table and json formats only.

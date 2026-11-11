@@ -274,6 +274,20 @@ pub(super) async fn handle_introspect_providers(
             };
             verdicts.push(serde_json::json!({"level": "WARN", "message": message}));
         }
+        // A Source whose latest stored run warned: one verdict per Source,
+        // its first instance's line.
+        let mut warned = registry.logs.warns_of(name);
+        warned.dedup_by(|a, b| a.0.source == b.0.source);
+        for (key, msg) in &warned {
+            let at = key
+                .path
+                .as_deref()
+                .map_or_else(|| "~".to_string(), |p| registry.home().compact(p));
+            verdicts.push(serde_json::json!({
+                "level": "WARN",
+                "message": format!("{name}.{} warned at {at}: {msg}", key.source.name())
+            }));
+        }
         let failing = (!failing.is_empty()).then(|| {
             serde_json::json!({
                 "sources": failing.iter().map(|(s, _, _, _)| s).collect::<Vec<_>>(),

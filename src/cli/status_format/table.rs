@@ -807,6 +807,7 @@ mod tests {
 
     fn failing_row(error: &str) -> CacheRow {
         CacheRow {
+            warn: None,
             shadowed: false,
             provider: "p".into(),
             path: None,

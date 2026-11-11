@@ -91,6 +91,21 @@ impl RunLogs {
         started
     }
 
+    /// Each instance of `provider` whose latest stored run raised a `warn`
+    /// (or worse), with the latest such line.
+    pub fn warns_of(&self, provider: &str) -> Vec<(Key, String)> {
+        let mut out: Vec<(Key, String)> = lock(&self.lines)
+            .iter()
+            .filter(|(k, _)| k.provider == provider)
+            .filter_map(|(k, lines)| {
+                let line = lines.iter().rev().find(|l| l.level >= Level::Warn)?;
+                Some((k.clone(), line.msg.clone()))
+            })
+            .collect();
+        out.sort_by(|a, b| (a.0.source.name(), &a.0.path).cmp(&(b.0.source.name(), &b.0.path)));
+        out
+    }
+
     /// The lines of `key`'s latest stored run.
     pub fn of(&self, key: &Key) -> Vec<LogLine> {
         lock(&self.lines).get(key).cloned().unwrap_or_default()
