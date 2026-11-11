@@ -50,6 +50,28 @@ use std::time::{Duration, Instant};
 use tempfile::TempDir;
 use tokio_util::sync::CancellationToken;
 
+/// The bench keeps its state and cache in a directory of its own, as a test
+/// process does (`isolate_state_dirs` in `src/lib.rs`): a config loaded from a
+/// file records itself in `migrated.json`, which would otherwise be the
+/// developer's.
+#[ctor::ctor(unsafe)]
+fn isolate_state_dirs() {
+    let dir = std::env::temp_dir().join(format!("beachcomber-bench-{}", std::process::id()));
+    // SAFETY: a constructor runs before `main`, while the process has one
+    // thread; the exit handler only removes the directory.
+    unsafe {
+        std::env::set_var("XDG_STATE_HOME", dir.join("state"));
+        std::env::set_var("XDG_CACHE_HOME", dir.join("cache"));
+        libc::atexit(remove_state_dirs);
+    }
+}
+
+extern "C" fn remove_state_dirs() {
+    let _ = std::fs::remove_dir_all(
+        std::env::temp_dir().join(format!("beachcomber-bench-{}", std::process::id())),
+    );
+}
+
 /// How many fresh daemons `second_get_after_cold` starts.
 const FRESH_DAEMONS: usize = 12;
 
