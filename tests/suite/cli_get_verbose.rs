@@ -169,16 +169,37 @@ fn text_is_status_trees_rows_with_each_line_under_its_row(d: &TestDaemon, home: 
         .success();
     let get = |args: &[&str]| d.comb(home).arg("get").args(args).output().unwrap();
     let two = get(&["s.v", "-vv", "--ascii", "./proj"]);
+    // The file that defines the Source hangs under its row; its path is
+    // this test's, so the rows are compared a word apart.
+    let config = home.parent().unwrap().join("xdg/beachcomber/config.toml");
+    let words = |rows: Vec<String>| -> Vec<String> {
+        rows.iter()
+            .map(|r| r.split_whitespace().collect::<Vec<_>>().join(" "))
+            .collect()
+    };
     assert_eq!(
-        rows(&two.stderr),
+        words(rows(&two.stderr)),
         [
-            "FIELD        SOURCE        VALUE  PATH     AGE",
-            "s.v          put           > P    ~/proj",
-            "`- shadowed  source(main)  ok     ~",
-            "     :       [warn] careful",
-            "     :       [info] noted",
+            "FIELD SOURCE VALUE PATH AGE",
+            "s.v put > P ~/proj",
+            "`- shadowed source(main) ok ~",
+            ": [warn] careful",
+            ": [info] noted",
+            &format!("`- origin config({}) data, result.v -", config.display()),
         ],
     );
+    assert!(rows(&two.stderr)[5].starts_with("     `- origin  config("));
+    let json = serde_json::from_slice::<serde_json::Value>(
+        &get(&["s.v", "-vv", "-f", "json", "./proj"]).stderr,
+    )
+    .unwrap();
+    assert_eq!(
+        json["_"]["chain"][1]["config"],
+        serde_json::json!([{"file": config.display().to_string(), "sets": ["data", "result.v"]}])
+    );
+    // Below -vv no row says where its Source is defined.
+    let one = get(&["s.v", "-v", "-f", "json", "./proj"]);
+    assert!(!String::from_utf8_lossy(&one.stderr).contains("\"config\""));
     assert!(!two.stderr.contains(&0x1b), "no colour off a terminal");
     // -v: the field row alone, and the hidden Source's warning, naming it.
     assert_eq!(

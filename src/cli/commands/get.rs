@@ -161,10 +161,19 @@ pub fn run_get(
     }
     if level.is_some() {
         session.set_log(None);
+        let defs = (verbose >= 2).then(|| super::verbose::Defs::of(config));
         let metas: Vec<Meta<'_>> = reads
             .into_iter()
             .map(|(key, age, log, value)| {
-                let meta = super::verbose::metadata(&mut session, key, path, age, log, verbose);
+                let meta = super::verbose::metadata(
+                    &mut session,
+                    key,
+                    path,
+                    age,
+                    log,
+                    verbose,
+                    defs.as_ref(),
+                );
                 (key, meta, value)
             })
             .collect();

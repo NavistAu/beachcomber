@@ -153,9 +153,13 @@ pub struct ChildMark {
     /// A log line, not a layer (`comb get -v`): its level. Its text is the
     /// row's value, drawn from the SOURCE column on.
     pub line: Option<libbeachcomber::protocol::Level>,
-    /// A line under a layer row, not under the value row: whether that layer
-    /// is the last.
+    /// A line or origin row under a layer row, not under the value row:
+    /// whether that layer is the last.
     pub under: Option<bool>,
+    /// A config file that sets the Source of the row above (`comb get -vv`),
+    /// not a layer: it hangs one level in, under that row, as `origin`, the
+    /// word `comb check config --origins` gives what it shows.
+    pub origin: bool,
 }
 
 /// The branch glyph of a row hanging under the one above: `├─`, or `└─` for
@@ -177,15 +181,21 @@ impl ChildMark {
     /// Colour dims a shadowed layer as well; the word is there either way.
     pub(super) fn field(self, ascii: bool) -> String {
         let g = Glyphs::of(ascii);
+        // A line or origin hangs two in from the text of the row it belongs
+        // to, and the tree's bar runs past it only to reach a later sibling
+        // of that row.
+        let lead = match self.under {
+            None => "  ".to_string(),
+            Some(true) => "     ".to_string(),
+            Some(false) => format!("{}    ", g.pipe),
+        };
         if self.line.is_some() {
-            // A line is no layer, so it takes no branch: its mark sits two
-            // in from the text of the row it belongs to, and the tree's bar
-            // runs past it only to reach a later sibling of that row.
-            return match self.under {
-                None => format!("  {}", g.line),
-                Some(true) => format!("     {}", g.line),
-                Some(false) => format!("{}    {}", g.pipe, g.line),
-            };
+            // A line is no layer, so it takes no branch.
+            return format!("{lead}{}", g.line);
+        }
+        if self.origin {
+            let shadowed = if self.answered { "" } else { " shadowed" };
+            return format!("{lead}{} origin{shadowed}", self.glyph(ascii));
         }
         let mut cell = vec![self.glyph(ascii)];
         if self.template {
@@ -280,6 +290,7 @@ pub fn tree_display_rows(
                 template: layer.facet.as_deref() == Some("template"),
                 line: None,
                 under: None,
+                origin: false,
             }));
         }
     }

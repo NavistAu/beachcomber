@@ -19,13 +19,16 @@
 //! without it asks the daemon nothing more.
 
 use crate::cache::{CacheRow, LayerRecord, RowKind};
+use crate::cli::config_origins;
 use crate::cli::status_format::{ChildMark, is_the_row, row_base, tree_display_rows};
 use crate::cli::style::Glyphs;
+use crate::config::Config;
 use libbeachcomber::Session;
 use libbeachcomber::path::Home;
 use libbeachcomber::protocol::{Level, LogLine};
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 
 /// The least log level `-v` given `count` times shows; `None` without it.
 pub fn level(count: u8) -> Option<Level> {
@@ -116,6 +119,129 @@ struct Row {
     value: Option<Value>,
     answered: bool,
     log: Vec<LogLine>,
+    /// A Source's row from `-vv`: the config files that set it.
+    config: Vec<Def>,
+}
+
+/// A config file that sets leaves of a Source, its own or the `sources._`
+/// prototype's it inherits.
+#[derive(Debug, Clone, PartialEq)]
+struct Def {
+    file: PathBuf,
+    /// The leaves it sets, from the Source's own table (`result.branch`), a
+    /// prototype's as `_.<leaf>`.
+    sets: Vec<String>,
+    /// Every leaf it sets is overridden by a later file.
+    shadowed: bool,
+    /// Since the file last changed; `None` for one not on disk (a shipped
+    /// default the daemon has not written yet).
+    age_ms: Option<u128>,
+}
+
+/// What `-vv` reads of the configuration to say which files set a Source:
+/// the client's own composition ([`config_origins::origins`]), read now. The
+/// daemon's may predate an edit it has not reloaded yet.
+pub struct Defs {
+    origins: Vec<(Vec<String>, config_origins::Origin)>,
+    /// The composed files, in composition order.
+    files: Vec<PathBuf>,
+}
+
+impl Defs {
+    pub fn of(config: &Config) -> Self {
+        Defs {
+            origins: config_origins::origins(config)
+                .into_iter()
+                .filter_map(|o| Some((libbeachcomber::key::parse_address(&o.key)?, o)))
+                .collect(),
+            files: config
+                .composed_layers()
+                .iter()
+                .map(|(file, _)| file.clone())
+                .collect(),
+        }
+    }
+
+    /// The files that set `provider`'s Source `name`, the last composed first.
+    fn of_source(&self, provider: &str, name: &str) -> Vec<Def> {
+        let at = |source: &str| -> Vec<String> {
+            ["daemon", "providers", provider, "sources", source]
+                .map(str::to_string)
+                .to_vec()
+        };
+        let below = |prefix: Vec<String>| {
+            self.origins
+                .iter()
+                .filter_map(move |(s, o)| Some((s.strip_prefix(prefix.as_slice())?, o)))
+                .filter(|(rel, _)| !rel.is_empty())
+        };
+        let own: Vec<_> = below(at(name)).collect();
+        // A prototype leaf the Source sets itself, or sets above or below, is
+        // not inherited.
+        let related = |a: &[String], b: &[String]| a.starts_with(b) || b.starts_with(a);
+        let inherited = below(at("_"))
+            .filter(|(rel, _)| name != "_" && !own.iter().any(|(o, _)| related(o, rel)))
+            .map(|(rel, o)| {
+                let mut proto = vec!["_".to_string()];
+                proto.extend_from_slice(rel);
+                (libbeachcomber::key::format_address(&proto), o)
+            });
+        let leaves = own
+            .iter()
+            .map(|(rel, o)| (libbeachcomber::key::format_address(rel), *o))
+            .chain(inherited);
+        let mut defs: Vec<Def> = Vec::new();
+        for (leaf, origin) in leaves {
+            let setters = origin
+                .file
+                .iter()
+                .chain(origin.shadowed.iter().map(|(f, _)| f));
+            for file in setters {
+                let holds = origin.file.as_ref() == Some(file);
+                match defs.iter_mut().find(|d| &d.file == file) {
+                    Some(def) => {
+                        def.sets.push(leaf.clone());
+                        def.shadowed &= !holds;
+                    }
+                    None => defs.push(Def {
+                        file: file.clone(),
+                        sets: vec![leaf.clone()],
+                        shadowed: !holds,
+                        age_ms: None,
+                    }),
+                }
+            }
+        }
+        let rank = |file: &PathBuf| self.files.iter().position(|f| f == file);
+        defs.sort_by_key(|d| std::cmp::Reverse(rank(&d.file)));
+        let now = std::time::SystemTime::now();
+        for def in &mut defs {
+            def.age_ms = std::fs::metadata(&def.file)
+                .and_then(|m| m.modified())
+                .ok()
+                .map(|t| now.duration_since(t).unwrap_or_default().as_millis());
+        }
+        defs
+    }
+}
+
+/// Give each Source row under `node` the config files that set it.
+fn define(node: &mut Node, provider: &str, defs: &Defs, seen: &mut BTreeMap<String, Vec<Def>>) {
+    for row in &mut node.chain {
+        if let Some(name) = row
+            .layer
+            .strip_prefix("source(")
+            .and_then(|r| r.strip_suffix(')'))
+        {
+            row.config = seen
+                .entry(name.to_string())
+                .or_insert_with(|| defs.of_source(provider, name))
+                .clone();
+        }
+    }
+    for child in node.children.values_mut() {
+        define(child, provider, defs, seen);
+    }
 }
 
 /// The metadata of one key's read: what the read itself knew (`age_ms`, the
@@ -128,6 +254,7 @@ pub fn metadata(
     age_ms: Option<u128>,
     log: Vec<LogLine>,
     count: u8,
+    defs: Option<&Defs>,
 ) -> Node {
     let home = Home::from_env();
     let (cache, layers) = daemon_keys(key).map_or((None, None), |(cache_key, layers_key)| {
@@ -137,6 +264,11 @@ pub fn metadata(
         )
     });
     let mut root = build(cache.as_ref(), layers.as_ref(), count, &home);
+    if let Some(defs) = defs.filter(|_| count >= 2)
+        && let Ok((head, _)) = libbeachcomber::key::split_key(key)
+    {
+        define(&mut root, row_base(head), defs, &mut BTreeMap::new());
+    }
     if !root.own.contains_key("age_ms")
         && let Some(age) = age_ms
     {
@@ -230,6 +362,7 @@ fn chain(stack: &[Value], count: u8, home: &Home) -> Vec<Row> {
             value: (count >= 2).then(|| l.get("value").cloned().unwrap_or(Value::Null)),
             answered: l.get("answered") == Some(&Value::Bool(true)),
             log: Vec::new(),
+            config: Vec::new(),
         }
     };
     let (answered, hidden): (Vec<_>, Vec<_>) = stack
@@ -380,6 +513,23 @@ impl Row {
         if !self.log.is_empty() {
             row.insert("log".into(), lines_json(&self.log));
         }
+        if !self.config.is_empty() {
+            let defs: Vec<Value> = self
+                .config
+                .iter()
+                .map(|d| {
+                    let mut def = serde_json::json!({
+                        "file": d.file.display().to_string(),
+                        "sets": d.sets,
+                    });
+                    if d.shadowed {
+                        def["shadowed"] = true.into();
+                    }
+                    def
+                })
+                .collect();
+            row.insert("config".into(), defs.into());
+        }
         row.into()
     }
 }
@@ -481,6 +631,32 @@ impl Sheet {
                     template: false,
                     line: Some(line.level),
                     under,
+                    origin: false,
+                }),
+            );
+        }
+    }
+
+    /// `defs` as origin rows under the row above: SOURCE the file, VALUE the
+    /// leaves it sets, PATH `-`, as a config file has no directory, AGE
+    /// since the file changed.
+    fn origins(&mut self, defs: &[Def], under: Option<bool>) {
+        for (i, def) in defs.iter().enumerate() {
+            self.push(
+                CacheRow {
+                    source: format!("config({})", def.file.display()),
+                    value: def.sets.join(", ").into(),
+                    path: Some("-".into()),
+                    age_ms: def.age_ms,
+                    ..CacheRow::default()
+                },
+                Some(ChildMark {
+                    last: i + 1 == defs.len(),
+                    answered: !def.shadowed,
+                    template: false,
+                    line: None,
+                    under,
+                    origin: true,
                 }),
             );
         }
@@ -533,15 +709,24 @@ fn group(
     let (field, mark) = display.next().expect("the field row");
     sheet.push(field, mark);
     // A row not drawn is the field row's own: its lines are the answer's.
-    for r in layers.iter().filter(|r| !drawn.contains(r)) {
+    let own: Vec<&Row> = layers
+        .iter()
+        .copied()
+        .filter(|r| !drawn.contains(r))
+        .collect();
+    for r in &own {
         sheet.lines(&r.log, false, None, glyphs);
     }
     sheet.lines(named, true, None, glyphs);
     named.clear();
+    for r in &own {
+        sheet.origins(&r.config, None);
+    }
     for ((layer, mark), r) in display.zip(drawn) {
         let last = mark.is_some_and(|m| m.last);
         sheet.push(layer, mark);
         sheet.lines(&r.log, false, Some(last), glyphs);
+        sheet.origins(&r.config, Some(last));
     }
 }
 
@@ -699,6 +884,97 @@ mod tests {
              git.branch  put     > main  ~     2.1s\n\
              \x20 :         [warn] source(head) ~: index.lock present\n\
              \x20 :         [info] client: noted\n"
+        );
+    }
+
+    fn defs() -> Defs {
+        let layer = |file: &str, text: &str| (PathBuf::from(file), toml::from_str(text).unwrap());
+        Defs::of(&Config::from_layers(vec![
+            layer(
+                "/d/git.toml",
+                "[daemon.providers.git.sources._]\nroot = \"r\"\nbudget = \"1s\"\n\
+                 [daemon.providers.git.sources.head]\ndata = \"d\"\nresult.branch = \"b\"\n\
+                 return = \"x\"\n[daemon.providers.git.sources.refs]\ndata = \"r\"\n",
+            ),
+            layer(
+                "/c/config.toml",
+                "[daemon.providers.git.sources.head]\nreturn = \"y\"\n",
+            ),
+            layer(
+                "/c/conf.d/10.toml",
+                "[daemon.providers.git.sources.head]\nreturn = \"z\"\nroot = \"own\"\n",
+            ),
+        ]))
+    }
+
+    #[test]
+    fn a_sources_files_are_the_last_composed_first_with_what_each_sets() {
+        let got: Vec<(String, Vec<String>, bool)> = defs()
+            .of_source("git", "head")
+            .into_iter()
+            .map(|d| (d.file.display().to_string(), d.sets, d.shadowed))
+            .collect();
+        let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            got,
+            vec![
+                ("/c/conf.d/10.toml".into(), s(&["return", "root"]), false),
+                ("/c/config.toml".into(), s(&["return"]), true),
+                (
+                    "/d/git.toml".into(),
+                    // `_.root` is not inherited: the Source sets its own.
+                    s(&["data", "result.branch", "return", "_.budget"]),
+                    false
+                ),
+            ]
+        );
+        assert!(
+            defs()
+                .of_source("git", "nope")
+                .iter()
+                .all(|d| d.sets == ["_.budget", "_.root"])
+        );
+    }
+
+    #[test]
+    fn at_vv_a_sources_row_has_its_files_under_it() {
+        let home = Home::literal(Some("/w"));
+        let stack = json!([
+            {"label": "put", "path": null, "value": "main", "age_ms": 9, "answered": true},
+            {"label": "source(head)", "path": null, "value": "feature/x", "age_ms": 2100}
+        ]);
+        let mut node = build(None, Some(&stack), 2, &home);
+        define(&mut node, "git", &defs(), &mut BTreeMap::new());
+        let chain = &node.to_json()["_"]["chain"];
+        assert!(chain[0].get("config").is_none(), "a put has no files");
+        assert_eq!(
+            chain[1]["config"][1],
+            json!({"file": "/c/config.toml", "sets": ["return"], "shadowed": true})
+        );
+        let read = Read {
+            key: "git.branch",
+            node: &node,
+            value: Some(&json!("main")),
+        };
+        let text = human(
+            &[read],
+            &Drawing {
+                dir: None,
+                count: 2,
+                ascii: true,
+                color: false,
+                width: None,
+                status: &[],
+            },
+        );
+        assert_eq!(
+            text,
+            "FIELD                    SOURCE                     VALUE                                  PATH  AGE\n\
+             git.branch               put                        > main                                 ~       -\n\
+             `- shadowed              source(head)               feature/x                              ~      2s\n\
+             \x20    |- origin           config(/c/conf.d/10.toml)  return, root                           -       -\n\
+             \x20    |- origin shadowed  config(/c/config.toml)     return                                 -       -\n\
+             \x20    `- origin           config(/d/git.toml)        data, result.branch, return, _.budget  -       -\n"
         );
     }
 
