@@ -10,7 +10,7 @@ use super::cells::{
     MARKER_WIDTH, TtlCell, TtlWidths, colour_value, compute_ttl_widths, format_age_with_polls,
     format_poll_cell, format_ttl_cell, row_is_tainted, sanitize_cell, template_marker,
 };
-use super::row::{ChildMark, shown_path, shown_value, tree_display_rows};
+use super::row::{ChildMark, shown_path, shown_source, shown_value, tree_display_rows};
 use super::text::{Cols, ellipsis, truncate, truncate_middle, truncate_path};
 use super::{FormatOptions, RenderOpts};
 use crate::cache::CacheRow;
@@ -37,15 +37,15 @@ const HEADERS: [&str; COLS] = [
 const H_AGE: usize = 5;
 const H_POLL: usize = 6;
 
-/// Ceiling on the SOURCE column in the human preset, lifted by
-/// `--no-trunc`.
+/// The least the SOURCE column is cut to when the width cap needs room
+/// (less at a narrow cap: a fifth of it), lifted by `--no-trunc`.
 ///
-/// SOURCE would otherwise take its natural width like PROVIDER, because a
+/// SOURCE takes its natural width while the row fits, as PROVIDER does: a
 /// Source name is short (`refs`, `head`, `put`, `rendered`). One kind is not:
-/// a `config:<file>` label is a whole path, and uncapped it pinned VALUE and
-/// PATH at their floors across every row of the table. Its tail
-/// (`…/defaults/aws.toml`) is what tells one config file from another, so the
-/// cell truncates from the head, like PATH does.
+/// a `config(<file>)` label is a whole path, and cut to a fixed width it lost
+/// its file name. Only when the row overflows with FIELD, PATH and VALUE cut
+/// to their floors is it cut, from the middle, so both the directory's head
+/// and the file name (`config(~/.con…/defaults/aws.toml)`) stay.
 const MAX_SOURCE_WIDTH: usize = 24;
 
 /// What the human and table presets show for an absent value: a template leaf
@@ -140,10 +140,6 @@ pub(super) fn render_table(
         // Auto-size the TTL cell's `{P}s×{KK} (total)` sub-fields to the
         // widest values in this snapshot.
         ttl_widths: compute_ttl_widths(rows),
-        // Budget-aware: SOURCE competes with VALUE/PATH for the same `trunc`
-        // total, so a 24-char config label alone must not starve those
-        // columns at a narrow cap.
-        source_cap: trunc.map(|c| MAX_SOURCE_WIDTH.min(c / 5)),
     };
     let mark_of = |index: usize| marks.get(index).copied().flatten();
 
@@ -167,7 +163,6 @@ struct Env {
     home: Home,
     now_unix_ms: u64,
     ttl_widths: TtlWidths,
-    source_cap: Option<usize>,
 }
 
 /// One table cell: its text, possibly carrying ANSI escapes, and the visible
@@ -252,10 +247,7 @@ fn measure(rows: &[CacheRow], mark_of: &dyn Fn(usize) -> Option<ChildMark>, env:
         // natural width. Only the taint marker does.
         let taint_width = if tainted { MARKER_WIDTH } else { 0 };
         w.path = w.path.max(path.cols());
-        w.source = w.source.max(match env.source_cap {
-            Some(cap) => row.source.cols().min(cap),
-            None => row.source.cols(),
-        });
+        w.source = w.source.max(shown_source(&row.source, &env.home).cols());
         if let Some(mark) = mark_of(index) {
             // A layer row has no PROVIDER, POLL or TTL of its own.
             w.field = w.field.max(mark.field(env.ascii).cols());
@@ -291,6 +283,7 @@ fn measure(rows: &[CacheRow], mark_of: &dyn Fn(usize) -> Option<ChildMark>, env:
 /// natural width.
 #[derive(Default)]
 struct Caps {
+    source: Option<usize>,
     field: Option<usize>,
     path: Option<usize>,
     value: Option<usize>,
@@ -321,20 +314,34 @@ struct Caps {
 fn fit(w: &mut Widths, total_cap: usize) -> Caps {
     let fixed =
         |w: &Widths| w.provider + w.source + w.age + w.poll + w.ttl + SEP_TOTAL + MARGIN_TOTAL;
+    let flex_floors =
+        MIN_FIELD_WIDTH.min(w.field) + MIN_PATH_WIDTH.min(w.path) + MIN_VALUE_WIDTH.min(w.value);
+    // SOURCE is cut only by what the row still overflows with FIELD, PATH
+    // and VALUE at their floors, down to its own ([`MAX_SOURCE_WIDTH`]): a
+    // config file's name outlasts the rest of a long value.
+    let least = fixed(w) + flex_floors;
+    let source_floor = MAX_SOURCE_WIDTH.min(total_cap / 5).min(w.source);
+    let source_w = w
+        .source
+        .saturating_sub(least.saturating_sub(total_cap))
+        .max(source_floor);
+    let source = (source_w < w.source).then_some(source_w);
+    w.source = source_w;
     let mut flex = total_cap.saturating_sub(fixed(w));
     // A tight cap may not afford the AGE/POLL stability floors: if the
     // flexible columns can't stand on their own floors, give the padding
     // back — a stable column is pointless when the row overflows the cap.
-    let flex_floors =
-        MIN_FIELD_WIDTH.min(w.field) + MIN_PATH_WIDTH.min(w.path) + MIN_VALUE_WIDTH.min(w.value);
     if flex < flex_floors && (w.age > w.age_raw || w.poll > w.poll_raw) {
         w.age = w.age_raw;
         w.poll = w.poll_raw;
         flex = total_cap.saturating_sub(fixed(w));
     }
     if w.value + w.field + w.path <= flex {
-        // All three fit at their natural widths: nothing truncates.
-        return Caps::default();
+        // All three fit at their natural widths: only SOURCE may be cut.
+        return Caps {
+            source,
+            ..Caps::default()
+        };
     }
     // A floor never widens a column past what it actually needs, hence the
     // `.min(w.*)` on each.
@@ -352,6 +359,7 @@ fn fit(w: &mut Widths, total_cap: usize) -> Caps {
         .max(path_floor);
 
     Caps {
+        source,
         field: (field_w < w.field).then_some(field_w),
         path: (path_w < w.path).then_some(path_w),
         value: (value_w < w.value).then_some(value_w),
@@ -409,9 +417,9 @@ fn data_line(
         None => sanitize_cell(&row.field, env.ascii),
     };
     let source = capped(
-        sanitize_cell(&row.source, env.ascii),
-        env.source_cap,
-        truncate_path,
+        sanitize_cell(&shown_source(&row.source, &env.home), env.ascii),
+        caps.source,
+        truncate_middle,
         ell,
     );
     let field = capped(field, caps.field, truncate_middle, ell);
@@ -668,5 +676,55 @@ mod tests {
             assert!(line.cols() <= 80, "{} cols: {line}", line.cols());
         }
         assert!(!out.contains("second line"), "{out}");
+    }
+
+    #[test]
+    fn a_memo_hit_is_its_own_row_and_its_template_hangs_under_it() {
+        use crate::cache::LayerRecord;
+        let row = CacheRow {
+            source: "memo".into(),
+            kind: Some(crate::cache::RowKind::Rendered),
+            value: "v".into(),
+            failure: None,
+            ..failing_row("")
+        };
+        let layer = |facet: &str, answered: bool| LayerRecord {
+            label: "config(/c.toml)".into(),
+            facet: Some(facet.into()),
+            path: None,
+            value: "v".into(),
+            age_ms: 0,
+            answered,
+        };
+        let (display, marks) = tree_display_rows(
+            &[row],
+            &[vec![layer("memo", true), layer("template", false)]],
+        );
+        assert_eq!(display.len(), 2, "the memo is the row: {display:?}");
+        assert!(marks[1].is_some_and(|m| m.template && m.last));
+    }
+
+    #[test]
+    fn a_config_label_is_whole_until_the_width_needs_it_cut_from_the_middle() {
+        let home = Home::literal(Some("/h"));
+        let label = "config(/h/.config/beachcomber/defaults/aws.toml)";
+        assert_eq!(
+            shown_source(label, &home),
+            "config(~/.config/beachcomber/defaults/aws.toml)"
+        );
+        assert_eq!(shown_source("source(head)", &home), "source(head)");
+        let row = CacheRow {
+            source: label.into(),
+            failure: None,
+            value: "x".into(),
+            ..failing_row("")
+        };
+        let wide = render_table(std::slice::from_ref(&row), &[], false, None, true);
+        assert!(wide.contains("defaults/aws.toml)"), "{wide}");
+        let narrow = render_table(&[row], &[], false, Some(80), true);
+        let cut = narrow.lines().nth(1).unwrap();
+        assert!(cut.contains("config("), "{narrow}");
+        assert!(cut.contains("aws.toml)"), "{narrow}");
+        assert!(cut.contains("..."), "{narrow}");
     }
 }

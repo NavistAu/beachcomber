@@ -181,12 +181,27 @@ impl ChildMark {
 /// Whether `layer` is `row` itself, which the row already shows: the record
 /// the read took, or under `-a` a shadowed record shown as a row of its own,
 /// whose children then show what shadows it. A rendered row is never its own
-/// layer — its template record is what defines it.
+/// template layer — its template record is what defines it — but a memo hit's
+/// row is the memo that answered it.
 pub(super) fn is_the_row(row: &CacheRow, layer: &crate::cache::LayerRecord) -> bool {
-    layer.facet.is_none()
-        && !matches!(row.kind, Some(crate::cache::RowKind::Rendered))
-        && layer.path == row.path
-        && layer.label == row.source
+    let rendered = matches!(row.kind, Some(crate::cache::RowKind::Rendered));
+    match layer.facet.as_deref() {
+        Some("memo") => rendered && layer.answered && row.source == "memo",
+        Some(_) => false,
+        None => !rendered && layer.path == row.path && layer.label == row.source,
+    }
+}
+
+/// A row's SOURCE as the tables show it: a `config(<file>)` label with the
+/// file under home written from `~`, as `check config --origins` writes it.
+pub(super) fn shown_source(source: &str, home: &libbeachcomber::path::Home) -> String {
+    match source
+        .strip_prefix("config(")
+        .and_then(|rest| rest.strip_suffix(')'))
+    {
+        Some(file) => format!("config({})", home.compact(file)),
+        None => source.to_string(),
+    }
 }
 /// A row's PATH as the tables show it: the global entry as `~`, and a path
 /// under home written from `~` ([`libbeachcomber::path::Home::compact`]).

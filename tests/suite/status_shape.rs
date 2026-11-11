@@ -2222,28 +2222,35 @@ fn human_caps_path_column_keeping_the_tail() {
 }
 
 #[test]
-fn human_caps_source_column_keeping_the_tail() {
-    // SOURCE truncates like PATH — from the head, keeping the tail that
-    // tells one config file from another.
+fn human_keeps_a_config_label_whole_until_the_width_needs_it_cut() {
+    // SOURCE keeps its natural width while the row fits; past the cap it is
+    // cut first, from the middle, keeping `config(` and the file name.
     let mut row = sample_lifecycle_row();
-    row.source = "config:~/.config/beachcomber/conf.d/mine.toml".into(); // 45 chars
-    let opts = RenderOpts {
-        is_tty: false,
-        no_color: true,
-        max_width: Some(120),
-        no_trunc: false,
-        ascii: true,
-        depth: None,
+    row.source = "config(~/.config/beachcomber/conf.d/mine.toml)".into(); // 46 chars
+    let at = |cap: usize| {
+        let opts = RenderOpts {
+            is_tty: false,
+            no_color: true,
+            max_width: Some(cap),
+            no_trunc: false,
+            ascii: true,
+            depth: None,
+        };
+        render_preset(&status_preset("human"), std::slice::from_ref(&row), &opts)
     };
-    let out = render_preset(&status_preset("human"), &[row], &opts);
+    let wide = at(120);
     assert!(
-        out.contains("...mber/conf.d/mine.toml"),
-        "SOURCE cell should truncate from the head and keep its tail: {out}"
+        wide.contains("config(~/.config/beachcomber/conf.d/mine.toml)"),
+        "the label fits at cap 120, so it is whole: {wide}"
     );
+    let narrow = at(100);
     assert!(
-        !out.contains("config:~/.config/beachcomber/conf.d/mine.toml"),
-        "the full 45-char label must not survive at cap 120: {out}"
+        !narrow.contains("config(~/.config/beachcomber/conf.d/mine.toml)"),
+        "{narrow}"
     );
+    let cut = narrow.lines().nth(1).unwrap();
+    assert!(cut.contains("config(~/"), "the head stays: {narrow}");
+    assert!(cut.contains("mine.toml)"), "the file name stays: {narrow}");
 }
 
 #[test]

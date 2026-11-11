@@ -279,7 +279,7 @@ A rendered row is marked in its VALUE cell: cyan when colour is on, a `▸ ` lea
 
 Rendering resolves with this shell's own environment and directory, and `_.exec()` is enabled, as for `comb get`, `comb eval` and `comb watch`.
 
-In the `human`/`table` preset, SOURCE keeps its tail past 24 characters (less at a narrow `--max-width`, since it shares the same truncation budget as VALUE and PATH) — a `config(<file>)` label is a whole path, and its tail (`…/defaults/aws.toml`) is what tells one config file from another — unless `--no-trunc`.
+In the `human`/`table` preset, SOURCE takes its whole width while the row fits: a `config(<file>)` label names its file whole, home written as `~`. Only when the row is still wider than `--max-width` with VALUE, FIELD and PATH cut to their floors is SOURCE cut, from the middle (`config(~/.con…/defaults/aws.toml)`), down to 24 characters (less at a narrow `--max-width`), so the file name stays; `--no-trunc` never cuts it.
 
 ### `--tree`: the layers behind each value
 
@@ -287,11 +287,11 @@ In the `human`/`table` preset, SOURCE keeps its tail past 24 characters (less at
 
 ```sh
 $ comb s --tree --filter provider=aws --filter field=profile --color never
-PROVIDER  FIELD                  SOURCE                          VALUE                      PATH          AGE  POLL  TTL
-aws       profile                rendered                        ▸ work                     ~/ws/project    -     -  ---
-          ├─ :template           config(…/conf.d/10-mine.toml)   {{ env.MY_PROFILE … }}     -             20m
-          ├─ :template shadowed  config(…/config.toml)           {{ 'personal' }}           -              2d
-          └─ :template shadowed  config(…/defaults/aws.toml)     {{ env.AWS_PROFILE or … }} -              2d
+PROVIDER  FIELD                  SOURCE                                             VALUE                       PATH          AGE  POLL  TTL
+aws       profile                rendered                                           ▸ work                      ~/ws/project    -     -  ---
+          ├─ :template           config(~/.config/beachcomber/conf.d/10-mine.toml)  {{ env.MY_PROFILE … }}      -             20m
+          ├─ :template shadowed  config(~/.config/beachcomber/config.toml)          {{ 'personal' }}            -              2d
+          └─ :template shadowed  config(~/.config/beachcomber/defaults/aws.toml)    {{ env.AWS_PROFILE or … }}  -              2d
 ```
 
 A layer row's AGE is its record's own: how long since that file or `put` last changed it. Facet rows are not value rows and get no layers (`-a` still lists them). `--tree` destructures every value to its leaves unless `--depth` says otherwise, and works with the `human`, `table` and `json` formats — in `json` each row gains a `layers` array (`{label, facet?, path, value, age_ms, answered?}`); any other format is an error. The layers come from the daemon's `layers` op ([Protocol Reference](./protocol-reference.md#layers)), which warms nothing.
