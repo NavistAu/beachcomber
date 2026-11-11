@@ -98,6 +98,19 @@ pub fn ensure(socket: &Path, spawn: &Spawn<'_>) -> Result<(), Error> {
         cmd.arg("--no-reap");
     }
     cmd.stdin(Stdio::null()).stdout(Stdio::null());
+    // A session of its own: otherwise the daemon stays in its spawner's
+    // process group (a prompt, an app), dies when that group is signalled,
+    // and a signal meant for its group reaches the spawner's.
+    // SAFETY: `setsid` is async-signal-safe; it runs in the child between
+    // fork and exec, where the child is never a group leader yet.
+    unsafe {
+        cmd.pre_exec(|| {
+            if libc::setsid() == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
     launch(&mut cmd, Some(spawn.log), READY_TIMEOUT).map(drop)
 }
 

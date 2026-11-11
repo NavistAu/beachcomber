@@ -67,7 +67,15 @@ pub fn stop(socket_path: &Path, timeout: Duration) -> Result<Stopped, String> {
 pub fn resolve_daemon_pid(socket_path: &Path) -> Result<i32, String> {
     let client = crate::client::build_client(socket_path);
     match client.introspect(libbeachcomber::IntrospectSubject::Daemon, None) {
-        Ok(libbeachcomber::IntrospectResponse::Daemon(health)) => Ok(health.pid as i32),
+        // Only a single process: 0 or a negative pid would signal a group,
+        // -1 every process the user owns.
+        Ok(libbeachcomber::IntrospectResponse::Daemon(health)) => match i32::try_from(health.pid) {
+            Ok(pid) if pid > 1 => Ok(pid),
+            _ => Err(format!(
+                "reported pid {}, which is not one process",
+                health.pid
+            )),
+        },
         Ok(_) => Err("answered introspect{daemon} with no daemon health".into()),
         Err(e) => Err(format!("is reachable but would not report its pid: {e}")),
     }

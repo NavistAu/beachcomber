@@ -658,7 +658,9 @@ pub fn binary_newer_than(binary: &Path, process_start_unix_ms: u64) -> std::io::
 pub fn supersede_existing(pid: u32, grace: Duration) -> std::io::Result<()> {
     let pid_t = pid as libc::pid_t;
 
-    if pid <= 1 || pid == std::process::id() {
+    // Above i32::MAX the cast is negative: kill() would signal a whole
+    // process group, or every process the user owns (-1).
+    if pid <= 1 || pid > i32::MAX as u32 || pid == std::process::id() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             format!("refusing to kill pid {pid}"),
