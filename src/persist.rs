@@ -139,15 +139,24 @@ impl PutStore {
     /// A put to `key` at `path` landed: it replaces what stood there, so every
     /// entry at or below the address goes, and `kept` (a persisted put's
     /// entry) takes its place. The file is written when anything changed.
-    pub fn record(&self, key: &str, path: Option<&str>, kept: Option<Persisted>) {
+    /// The keys of the entries that went, which `kept` does not replace.
+    pub fn record(&self, key: &str, path: Option<&str>, kept: Option<Persisted>) -> Vec<String> {
         let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
         let before = entries.len();
-        entries.retain(|e| !e.at_or_below(key, path));
+        let mut dropped = Vec::new();
+        entries.retain(|e| {
+            let goes = e.at_or_below(key, path);
+            if goes && kept.as_ref().is_none_or(|k| k.key != e.key) {
+                dropped.push(e.key.clone());
+            }
+            !goes
+        });
         let changed = entries.len() != before || kept.is_some();
         entries.extend(kept);
         if changed {
             self.write(&entries);
         }
+        dropped
     }
 
     /// The put at `key` at `path` expired: its entry goes, and only its own.

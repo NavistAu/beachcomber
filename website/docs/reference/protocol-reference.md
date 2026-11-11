@@ -258,7 +258,7 @@ Write static data at any node. `key` is `namespace` or `namespace.node…`, the 
 {"op":"put","key":"myapp","data":null}
 ```
 
-Response: `{"ok":true}`
+Response: `{"ok":true}`, with a `log` of `warn` lines (origin `put`) when the put replaced what was put below it at that directory (`<key>: replaced, so these went: <keys>`) or, without `persist`, stopped keeping persisted puts (`<key>: not --persist, so no longer kept across a restart: <keys>`).
 
 - **Replaces.** A put replaces the node it addresses; nothing merges implicitly, so `put my {"b":2}` states all of `my` at that directory, and `put my.b 2` replaces only `my.b`.
 - **Absent.** `"data": null` removes the put layer at the node: the node and every put address at or below it. The layer below shows through. A `null` inside `data` is an absent leaf, never `""`.

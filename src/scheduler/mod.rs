@@ -375,6 +375,14 @@ impl FailureState {
             .unwrap_or(false)
     }
 
+    /// How long the failback backoff still holds runs back, while it does.
+    pub(crate) fn backoff_left(&self) -> Option<(Duration, u32)> {
+        let left = self
+            .suppressed_until?
+            .saturating_duration_since(Instant::now());
+        (!left.is_zero()).then_some((left, self.consecutive_failures))
+    }
+
     /// The streak as `status` shows it; `None` once a success ended it.
     pub(crate) fn snapshot(&self) -> Option<FailureSnapshot> {
         (self.consecutive_failures > 0).then(|| FailureSnapshot {

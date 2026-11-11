@@ -26,10 +26,20 @@ result.v = "{{{{ data }}}}"
 [daemon.providers.h.sources.main]
 data = "{{{{ _.log.warn('careful') }}}}{{{{ _.log.info('noted') }}}}{{{{ _.log.debug('detail') }}}}ok"
 result.v = "{{{{ data }}}}"
+[daemon.providers.ps.sources.main]
+data = "{{{{ _.log.warn('careful') }}}}{{{{ _.log.info('noted') }}}}{{{{ _.log.debug('detail') }}}}ok"
+result.v = "{{{{ data }}}}"
 [client.providers.t]
 template.x = "{{{{ _.log.warn('rendered warn') }}}}r"
 template.bad = "{{{{ _.fail('broken leaf') }}}}"
+[daemon.providers.off]
+enabled = false
+[daemon.providers.off.sources.a]
+data = "1"
+result.v = "{{{{ data }}}}"
 [client.providers.m]
+template.v = "{{{{ 'v' | cache() | default(_.log.warn('computed')) }}}}"
+[client.providers.m2]
 template.v = "{{{{ 'v' | cache() | default(_.log.warn('computed')) }}}}"
 "#,
             flag = flag.display()
@@ -50,6 +60,9 @@ fn the_cases_share_one_daemon() {
     several_keys_are_one_document_keyed_by_key(&d, &home);
     a_vvv_read_that_starts_debug_capture_says_when_its_lines_come(&d, &home);
     a_memo_hit_replays_the_lines_its_render_raised(&d, &home);
+    a_memo_says_why_it_missed_or_hit(&d, &home);
+    a_read_of_a_disabled_or_unknown_provider_is_a_warning(&d, &home);
+    a_put_says_what_it_hides_replaces_and_stops_keeping(&d, &home);
 }
 
 fn json(bytes: &[u8]) -> serde_json::Value {
@@ -295,5 +308,60 @@ fn a_memo_hit_replays_the_lines_its_render_raised(d: &TestDaemon, home: &std::pa
         text.iter()
             .all(|l| !l.starts_with("|-") && !l.starts_with("|  ")),
         "no memo layer row, no bar: {text:?}"
+    );
+}
+
+fn a_memo_says_why_it_missed_or_hit(d: &TestDaemon, home: &std::path::Path) {
+    let get = |args: &[&str]| json(&d.comb(home).arg("get").args(args).output().unwrap().stderr);
+    let miss = get(&["m2.v", "-vv", "-f", "json"]);
+    assert_line(&miss, "info", "memo miss: no memo");
+    let hit = get(&["m2.v", "-vvv", "-f", "json"]);
+    assert_line(&hit, "debug", "memo hit");
+    // comb's reasons are the read's: a hit does not replay the miss's.
+    assert!(
+        !lines(&hit).iter().any(|(_, m)| m.contains("memo miss")),
+        "{hit}"
+    );
+    let forced = get(&["m2.v", "-vv", "--force", "-f", "json"]);
+    assert_line(&forced, "info", "--force renders past the memo");
+}
+
+fn a_read_of_a_disabled_or_unknown_provider_is_a_warning(d: &TestDaemon, home: &std::path::Path) {
+    let get = |args: &[&str]| json(&d.comb(home).arg("get").args(args).output().unwrap().stderr);
+    assert_line(
+        &get(&["off.v", "-v", "-f", "json"]),
+        "warn",
+        "off is disabled",
+    );
+    assert_line(
+        &get(&["sss.v", "-v", "-f", "json"]),
+        "warn",
+        "no provider is named 'sss'",
+    );
+    let plain = d.comb(home).args(["get", "sss.v"]).output().unwrap();
+    assert!(plain.stderr.is_empty(), "only where a read asks");
+}
+
+fn a_put_says_what_it_hides_replaces_and_stops_keeping(d: &TestDaemon, home: &std::path::Path) {
+    let put = |args: &[&str]| {
+        let out = d.comb(home).arg("put").args(args).output().unwrap();
+        assert!(out.status.success());
+        String::from_utf8(out.stderr).unwrap()
+    };
+    d.comb(home).args(["get", "ps.v"]).assert().success();
+    assert!(put(&["ps.v", r#""P""#]).contains("warning: ps.v: the put hides source(main) at ~"),);
+    assert!(put(&["q", r#"{"a":1,"b":2}"#]).is_empty());
+    let replaced = put(&["q", r#"{"a":1}"#]);
+    assert!(
+        replaced.contains("q: replaced, so these went: q.b"),
+        "{replaced}"
+    );
+    put(&["q.a", "2", "--persist"]);
+    let dropped = put(&["q.a", "3"]);
+    assert!(dropped.contains("not --persist"), "{dropped}");
+    let hidden = put(&["t.x", r#""p""#]);
+    assert!(
+        hidden.contains("a template answers here, over the put"),
+        "{hidden}"
     );
 }

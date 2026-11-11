@@ -94,6 +94,9 @@ pub fn run_get(
     let mut outcome = Outcome::Done;
     let level = super::verbose::level(verbose);
     session.set_log(level);
+    if let Some(level) = level {
+        super::verbose::trace_client(level);
+    }
     // What `-v` says of each key that resolved: its age and its lines.
     let mut reads = Vec::new();
     for key in keys {

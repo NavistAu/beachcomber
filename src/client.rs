@@ -123,7 +123,14 @@ impl Client {
         path: Option<&str>,
         persist: bool,
     ) -> std::io::Result<Response> {
-        unit_to_response(self.inner().put(key, data, ttl, path, persist))
+        to_response(
+            self.inner().put_logged(key, data, ttl, path, persist),
+            |log| {
+                let mut response = Response::miss();
+                response.log = log;
+                response
+            },
+        )
     }
 
     pub fn refresh(&self, key: &str, path: Option<&str>) -> std::io::Result<Response> {

@@ -328,15 +328,45 @@ fn exec(ctx: &EngineCtx, name: &str, command: &MjValue, kwargs: Kwargs) -> Resul
         env: &ctx.env,
         cwd: ctx.cwd.as_deref(),
     };
+    // Each run's argv, outcome and duration, where a read asks for `debug`.
+    let started =
+        crate::library::log::wanted(crate::protocol::Level::Debug).then(std::time::Instant::now);
+    let said = |outcome: &str| {
+        if let Some(started) = started {
+            let argv = std::iter::once(program.as_str())
+                .chain(args.iter().map(String::as_str))
+                .collect::<Vec<_>>()
+                .join(" ");
+            let took = format!("{:.1?}", started.elapsed());
+            crate::library::log::raise(
+                crate::protocol::Level::Debug,
+                &format!("{name}: {argv}: {outcome} in {took}"),
+            );
+        }
+    };
     if name != "execa" {
-        return crate::exec::run(&req).map(MjValue::from).map_err(op_error);
+        let ran = crate::exec::run(&req);
+        said(match &ran {
+            Ok(_) => "ran",
+            Err(_) => "failed",
+        });
+        return ran.map(MjValue::from).map_err(op_error);
     }
     // A signal has no exit code, so it is outside any `ok=` list.
     let accept = |status: &std::process::ExitStatus| {
         ok.as_ref()
             .is_none_or(|codes| status.code().is_some_and(|c| codes.contains(&c)))
     };
-    let ran = crate::exec::run_with(&req, accept).map_err(op_error)?;
+    let ran = crate::exec::run_with(&req, accept);
+    said(&match &ran {
+        Ok(r) => match (r.code, &r.signal) {
+            (Some(code), _) => format!("exit {code}"),
+            (None, Some(signal)) => format!("signal {signal}"),
+            _ => "ran".to_string(),
+        },
+        Err(_) => "failed".to_string(),
+    });
+    let ran = ran.map_err(op_error)?;
     Ok(minijinja::context! {
         stdout => ran.stdout,
         stderr => ran.stderr,

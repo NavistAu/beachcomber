@@ -254,9 +254,11 @@ fn cache(
         let hash = memo_hash(inputs, &leaf.paths).map_err(op_error)?;
         if leaf.takes(hash) {
             leaf.cached = Some(Cached::Hit);
+            say_hit(leaf);
             let data = leaf.memo.as_ref().and_then(|m| m.data.clone());
             return Ok(Some(data));
         }
+        say_miss(leaf, hash);
         leaf.cached = Some(Cached::Miss(hash));
         Ok(None)
     })?;
@@ -264,6 +266,60 @@ fn cache(
         Some(Some(data)) => Err(op_error("memo hit").with_source(MemoHit(data))),
         _ => Ok(piped),
     }
+}
+
+/// Where comb's own reasons about a memo come from: a read's, never stored
+/// with the memo it is about.
+pub const ORIGIN: &str = "memo";
+
+/// Say why the memo answered: `debug` with its age, or `warn` when a reader
+/// that waits nothing took a stale one.
+fn say_hit(leaf: &Leaf) {
+    use crate::library::log::{raise_at, wanted};
+    use crate::protocol::Level;
+    let Some(memo) = &leaf.memo else { return };
+    let level = if memo.stale {
+        Level::Warn
+    } else {
+        Level::Debug
+    };
+    if !wanted(level) {
+        return;
+    }
+    let age = crate::render::duration(Duration::from_millis(memo.age_ms as u64));
+    let msg = if memo.stale {
+        format!("--wait 0 served a stale memo, {age} old, rather than render")
+    } else {
+        format!("memo hit, {age} old")
+    };
+    raise_at(level, Some(ORIGIN), Some(&leaf.key), &msg);
+}
+
+/// Say why the memo did not answer, at `info`.
+fn say_miss(leaf: &Leaf, hash: u64) {
+    use crate::library::log::{raise_at, wanted};
+    use crate::protocol::Level;
+    if !wanted(Level::Info) {
+        return;
+    }
+    let why = match &leaf.memo {
+        _ if leaf.force => "--force renders past the memo",
+        None => "no memo",
+        Some(m) if m.hash.is_none() && !m.stale => {
+            "an invalidation dropped the memo's hash (a put, a refresh or a watched file)"
+        }
+        Some(m) if m.stale => "the memo is past its ttl",
+        Some(m) if m.hash.as_deref() != Some(hex(hash).as_str()) => {
+            "an input or a watched file changed since the memo (its hash differs)"
+        }
+        Some(_) => "the memo did not answer",
+    };
+    raise_at(
+        Level::Info,
+        Some(ORIGIN),
+        Some(&leaf.key),
+        &format!("memo miss: {why}; rendered"),
+    );
 }
 
 /// The hash `cache()` stores a leaf's memo under: FNV-1a 64

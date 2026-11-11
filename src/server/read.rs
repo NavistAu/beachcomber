@@ -738,6 +738,23 @@ pub(super) async fn handle_get(
     let mut response = resolve_halves(&merged, &plan.target, half);
     if let Some(level) = log {
         response.log = read_log(registry, &logged, level);
+        // Probable mistakes in the key itself, said where a read asks.
+        let base = provider_name
+            .split_once(':')
+            .map_or(provider_name, |(b, _)| b);
+        let said = if let Some(why) = registry.disabled_reason(base) {
+            Some(format!("{base} is {why}: no Source of it runs"))
+        } else if response.data.is_none()
+            && response.template.is_none()
+            && !registry.is_registered(base)
+        {
+            Some(format!("no provider is named '{base}' (a typo?)"))
+        } else {
+            None
+        };
+        if let Some(msg) = said.filter(|_| level <= Level::Warn) {
+            response.log.push(LogLine::new(Level::Warn, "read", msg));
+        }
         // A stored run from before this ask kept none of its debug lines.
         let debugged = response
             .log
@@ -768,12 +785,24 @@ fn read_log(
         let key = instance_key(provider, &instance.source, instance.root.address());
         let origin = format!("source({})", instance.source);
         let mut lines = registry.logs.of(&key);
-        let failure = registry
+        let (failure, backoff) = registry
             .failures
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .get(&key)
-            .and_then(|state| state.snapshot());
+            .map_or((None, None), |state| {
+                (state.snapshot(), state.backoff_left())
+            });
+        if let Some((left, n)) = backoff.filter(|_| failure.as_ref().is_some_and(|f| !f.stopped)) {
+            lines.push(LogLine::new(
+                Level::Warn,
+                &origin,
+                format!(
+                    "not run: in failback backoff for {} more, after {n} failures in a row",
+                    libbeachcomber::render::duration(left)
+                ),
+            ));
+        }
         if let Some(failure) = failure {
             let msg = failure.last_error.unwrap_or_default();
             let n = u64::from(failure.consecutive_failures);

@@ -597,6 +597,18 @@ impl Cache {
         Ok(())
     }
 
+    /// What the `put` layer of `namespace`'s entry `at` holds at `node` (the
+    /// whole layer for the root), or `None`.
+    pub fn put_value(&self, namespace: &str, at: Option<&str>, node: &str) -> Option<Value> {
+        let entry = self.entries.get(&make_cache_key(namespace, at))?;
+        let fields = &entry.put.as_ref()?.fields;
+        if node.is_empty() {
+            Some(Value::Object(fields.clone()))
+        } else {
+            crate::provider::lookup_path(fields, node).cloned()
+        }
+    }
+
     /// Whether a put at `provider`'s entry `at` states the record at `tail`: a
     /// put address at or above it hides whatever a Source holds there.
     pub fn put_answers(&self, provider: &str, at: Option<&str>, tail: &str) -> bool {

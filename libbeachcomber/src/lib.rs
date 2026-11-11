@@ -588,8 +588,21 @@ impl Client {
         path: Option<&str>,
         persist: bool,
     ) -> Result<(), CombError> {
+        self.put_logged(key, data, ttl, path, persist).map(|_| ())
+    }
+
+    /// [`Client::put`], with the warnings the daemon gave about it (what the
+    /// put replaced, or stopped keeping across a restart).
+    pub fn put_logged(
+        &self,
+        key: &str,
+        data: serde_json::Value,
+        ttl: Option<&str>,
+        path: Option<&str>,
+        persist: bool,
+    ) -> Result<Vec<protocol::LogLine>, CombError> {
         self.call(&put_request(key, data, ttl, path, persist)?)
-            .map(|_| ())
+            .map(|response| response.log)
     }
 
     /// Trigger recomputation of a provider. Fire-and-forget.

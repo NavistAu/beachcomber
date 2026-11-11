@@ -683,7 +683,14 @@ impl<'a> Resolver<'a> {
     /// it binds nothing. A transport failure still stops the resolution.
     fn fetch_ref(&mut self, key: &str) -> Result<Option<Got>, ResolveError> {
         match self.fetch(key) {
-            Err(ResolveError::Fetch(FetchError::Rejected(_))) => Ok(None),
+            // Likely a typo (a provider that is not one): said, where asked.
+            Err(ResolveError::Fetch(FetchError::Rejected(m))) => {
+                if crate::library::log::wanted(crate::protocol::Level::Warn) {
+                    let msg = format!("reads {key}, which is refused, so absent: {m}");
+                    crate::library::log::raise(crate::protocol::Level::Warn, &msg);
+                }
+                Ok(None)
+            }
             other => other,
         }
     }
@@ -773,6 +780,9 @@ impl<'a> Resolver<'a> {
         };
         // A leaf's lines are kept for its memo, `info` and above (`debug` too
         // where the read asks for it), and are the read's as well.
+        // What the render read and how long it took, where a read asks.
+        let started = crate::library::log::wanted(crate::protocol::Level::Debug)
+            .then(std::time::Instant::now);
         let (rendered, lines) = if leaf {
             let min = if crate::library::log::wanted(crate::protocol::Level::Debug) {
                 crate::protocol::Level::Debug
@@ -784,6 +794,30 @@ impl<'a> Resolver<'a> {
             (render(), Vec::new())
         };
         crate::library::log::extend(lines.clone());
+        if let Some(started) = started {
+            let read: Vec<String> = refs
+                .iter()
+                .map(|r| match r {
+                    Ref::Env(name) => format!("env.{name}"),
+                    Ref::CombField(p, f) => format!("comb.{p}.{f}"),
+                    Ref::CombProvider(p) => format!("comb.{p}"),
+                    Ref::Resolved(p, rest) => crate::key::join(p, rest),
+                    Ref::Dynamic(name) => name.clone(),
+                })
+                .collect();
+            let read = if read.is_empty() {
+                "nothing".to_string()
+            } else {
+                read.join(", ")
+            };
+            let took = format!("{:.1?}", started.elapsed());
+            crate::library::log::raise_at(
+                crate::protocol::Level::Debug,
+                None,
+                Some(key),
+                &format!("rendered in {took}, reading {read}"),
+            );
+        }
         if let Some(Frame::Leaf(leaf)) = self.frames.pop() {
             self.settle(leaf, &rendered, lines);
         }
@@ -825,7 +859,11 @@ impl<'a> Resolver<'a> {
                 data: value.clone(),
                 watch: leaf.paths,
                 ttl: leaf.ttl,
-                log: lines,
+                // comb's reasons were this read's, and are not the value's.
+                log: lines
+                    .into_iter()
+                    .filter(|l| l.origin != crate::library::memo::ORIGIN)
+                    .collect(),
             }),
             _ => {}
         }

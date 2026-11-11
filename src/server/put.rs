@@ -5,6 +5,7 @@ use crate::cache::Cache;
 use crate::protocol::Response;
 use crate::provider::registry::ProviderRegistry;
 use crate::scheduler::SchedulerHandle;
+use libbeachcomber::protocol::{Level, LogLine};
 use std::sync::Arc;
 
 /// A request's `ttl`: whole seconds and at least one, or none. One reading
@@ -286,6 +287,24 @@ pub(crate) async fn put(
     };
 
     let persisted = (persist && store.is_some()).then(|| value.clone());
+    // What was put at or below the node here, and is not in the new value:
+    // replaced with it, and said.
+    let before = cache.put_value(namespace, effective_path.as_deref(), node);
+    let mut went = Vec::new();
+    if let Some(before) = &before {
+        leaves(before, &address, &mut went);
+        let mut now = Vec::new();
+        leaves(&value, &address, &mut now);
+        went.retain(|leaf| !now.contains(leaf));
+    }
+    let mut log = Vec::new();
+    if !went.is_empty() {
+        log.push(LogLine::new(
+            Level::Warn,
+            "put",
+            format!("{address}: replaced, so these went: {}", went.join(", ")),
+        ));
+    }
     if let Err(e) = cache.write_static(
         namespace,
         effective_path.as_deref(),
@@ -304,7 +323,17 @@ pub(crate) async fn put(
             expires: ttl_secs.map(|secs| crate::persist::now_ms() + secs * 1000),
             schema: crate::config::migrate::current(),
         });
-        store.record(&address, effective_path.as_deref(), kept);
+        let dropped = store.record(&address, effective_path.as_deref(), kept);
+        if !persist && !dropped.is_empty() {
+            log.push(LogLine::new(
+                Level::Warn,
+                "put",
+                format!(
+                    "{address}: not --persist, so no longer kept across a restart: {}",
+                    dropped.join(", ")
+                ),
+            ));
+        }
     }
     if let Some(value) = persisted {
         cache.mark_persisted(namespace, effective_path.as_deref(), node, &value);
@@ -316,7 +345,21 @@ pub(crate) async fn put(
     // (`register_static` refuses a registered name).
     registry.register_static(namespace);
 
-    Response::miss()
+    let mut response = Response::miss();
+    response.log = log;
+    response
+}
+
+/// Every leaf of `value`, by its full key under `at`.
+fn leaves(value: &crate::provider::Value, at: &str, out: &mut Vec<String>) {
+    match value {
+        crate::provider::Value::Object(map) if !map.is_empty() => {
+            for (k, v) in map {
+                leaves(v, &libbeachcomber::key::push(at, k), out);
+            }
+        }
+        _ => out.push(at.to_string()),
+    }
 }
 
 /// `memo`: store a rendered template's value under its hash, and tell the

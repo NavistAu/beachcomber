@@ -37,6 +37,55 @@ pub fn level(count: u8) -> Option<Level> {
     }
 }
 
+/// The client's own `tracing` events, as lines of the read in progress with
+/// origin `client` ([`libbeachcomber::library::log::raise_at`]), rather than
+/// text on stderr, which holds one document. A template's `_.log.*` lines
+/// are captured where they are raised, so their target is left out.
+struct ClientLines;
+
+impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for ClientLines {
+    fn on_event(&self, event: &tracing::Event<'_>, _: tracing_subscriber::layer::Context<'_, S>) {
+        let meta = event.metadata();
+        if meta.target() == libbeachcomber::library::log::TARGET {
+            return;
+        }
+        let level = match *meta.level() {
+            tracing::Level::ERROR => Level::Error,
+            tracing::Level::WARN => Level::Warn,
+            tracing::Level::INFO => Level::Info,
+            _ => Level::Debug,
+        };
+        let mut msg = String::new();
+        event.record(&mut Message(&mut msg));
+        libbeachcomber::library::log::raise_at(level, Some("client"), None, &msg);
+    }
+}
+
+/// An event's text: its message, then each other field as `name=value`.
+struct Message<'a>(&'a mut String);
+
+impl tracing::field::Visit for Message<'_> {
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        use std::fmt::Write;
+        if field.name() == "message" {
+            let _ = write!(self.0, "{value:?}");
+        } else {
+            let _ = write!(self.0, " {}={value:?}", field.name());
+        }
+    }
+}
+
+/// Send this process's `tracing` events at `level` and above (`RUST_LOG`
+/// overrides) into the read's lines ([`ClientLines`]).
+pub fn trace_client(level: Level) {
+    use tracing_subscriber::layer::SubscriberExt;
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(level.name()));
+    let subscriber = tracing_subscriber::registry()
+        .with(tracing_subscriber::Layer::with_filter(ClientLines, filter));
+    let _ = tracing::subscriber::set_global_default(subscriber);
+}
+
 /// One node of a read's metadata tree.
 #[derive(Debug, Default, PartialEq)]
 pub struct Node {
@@ -677,6 +726,23 @@ mod tests {
         assert_eq!(json["_"]["log"][0]["path"], "~/p");
         assert_eq!(json["t"]["_"]["chain"][0]["log"][0]["msg"], "p.t: broken");
         assert!(json["t"]["_"]["chain"][0]["log"][0].get("key").is_none());
+    }
+
+    #[test]
+    fn the_clients_own_events_are_lines_from_client() {
+        use tracing_subscriber::layer::SubscriberExt;
+        let subscriber = tracing_subscriber::registry().with(ClientLines);
+        let ((), lines) =
+            libbeachcomber::library::log::capture(Level::Info, "template", true, || {
+                tracing::subscriber::with_default(subscriber, || {
+                    tracing::warn!(key = "git.branch", "slow socket");
+                    tracing::debug!("dropped below info");
+                    tracing::warn!(target: "beachcomber::template", "already captured");
+                });
+            });
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert_eq!(lines[0].origin, "client");
+        assert_eq!(lines[0].msg, "slow socket key=\"git.branch\"");
     }
 
     #[test]
