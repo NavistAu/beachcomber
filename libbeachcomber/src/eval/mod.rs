@@ -1115,6 +1115,7 @@ mod line_tests {
                 stale: false,
                 age_ms: 1,
                 data: memo,
+                log: Vec::new(),
             }),
             false,
             crate::Wait::Budget,

@@ -29,6 +29,8 @@ result.v = "{{{{ data }}}}"
 [client.providers.t]
 template.x = "{{{{ _.log.warn('rendered warn') }}}}r"
 template.bad = "{{{{ _.fail('broken leaf') }}}}"
+[client.providers.m]
+template.v = "{{{{ 'v' | cache() | default(_.log.warn('computed')) }}}}"
 "#,
             flag = flag.display()
         ),
@@ -47,6 +49,7 @@ fn the_cases_share_one_daemon() {
     a_failure_hidden_today_is_an_error_line(&d, &home);
     several_keys_are_one_document_keyed_by_key(&d, &home);
     a_vvv_read_that_starts_debug_capture_says_when_its_lines_come(&d, &home);
+    a_memo_hit_replays_the_lines_its_render_raised(&d, &home);
 }
 
 fn json(bytes: &[u8]) -> serde_json::Value {
@@ -268,4 +271,29 @@ fn debug_capture_lapses_once_no_read_asks_for_it() {
     d.advance(std::time::Duration::from_secs(13 * 60));
     get(&["s.v", "-vv", "--force", "-f", "json"]);
     assert!(!debug(&get(&["s.v", "-vvv", "-f", "json"])));
+}
+
+fn a_memo_hit_replays_the_lines_its_render_raised(d: &TestDaemon, home: &std::path::Path) {
+    let get = |args: &[&str]| d.comb(home).arg("get").args(args).output().unwrap();
+    // A read without -v renders, and stores its lines with the memo.
+    assert_eq!(get(&["m.v"]).stdout, b"v");
+    let hit = json(&get(&["m.v", "-v", "-f", "json"]).stderr);
+    let chain = &hit["_"]["chain"];
+    assert_eq!(chain[0]["layer"], "memo", "{hit}");
+    assert_eq!(chain[0]["log"][0]["msg"], "computed", "{hit}");
+    assert_eq!(chain[0]["log"][0]["origin"], "memo", "{hit}");
+    // Under text the hit is the field row itself, its lines straight under it.
+    let text = rows(&get(&["m.v", "-vv", "--ascii"]).stderr);
+    assert!(text[1].starts_with("m.v "), "{text:?}");
+    assert!(text[1].contains(" memo "), "{text:?}");
+    assert!(text[2].starts_with("  :  "), "{text:?}");
+    assert!(
+        text.iter().any(|l| l.ends_with("[warn] computed")),
+        "{text:?}"
+    );
+    assert!(
+        text.iter()
+            .all(|l| !l.starts_with("|-") && !l.starts_with("|  ")),
+        "no memo layer row, no bar: {text:?}"
+    );
 }

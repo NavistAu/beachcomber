@@ -24,6 +24,7 @@ pub(super) fn parse_ttl(ttl: Option<&str>) -> Result<Option<u64>, String> {
 /// leaf's canonical address and the memo; or why it is refused. The key is
 /// a provider's field, never a facet or a bare provider; the hash sixteen
 /// lowercase hex digits; each watch path absolute; the ttl as a `put`'s.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn memo_write(
     key: &str,
     path: Option<&str>,
@@ -31,6 +32,7 @@ pub(super) fn memo_write(
     data: Option<&serde_json::Value>,
     watch: &[String],
     ttl: Option<&str>,
+    log: &[libbeachcomber::protocol::LogLine],
     home: &crate::query::Home,
 ) -> Result<(String, Option<String>, String, crate::cache::MemoWrite), String> {
     let (provider, field) = libbeachcomber::key::split_key(key)?;
@@ -70,6 +72,7 @@ pub(super) fn memo_write(
         hash: hash.to_string(),
         watch: watch.to_vec(),
         ttl_secs,
+        log: log.to_vec(),
     };
     Ok((provider.to_string(), path, field, write))
 }
@@ -318,6 +321,7 @@ pub(crate) async fn put(
 
 /// `memo`: store a rendered template's value under its hash, and tell the
 /// scheduler what it watches.
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn handle_memo(
     ctx: &Ctx,
     key: &str,
@@ -326,9 +330,10 @@ pub(super) async fn handle_memo(
     data: Option<&serde_json::Value>,
     watch: &[String],
     ttl: Option<&str>,
+    log: &[libbeachcomber::protocol::LogLine],
 ) -> Response {
     let home = ctx.registry.current().home().clone();
-    match memo_write(key, path, hash, data, watch, ttl, &home) {
+    match memo_write(key, path, hash, data, watch, ttl, log, &home) {
         Ok((provider, path, field, write)) => {
             let written = crate::scheduler::SchedulerMessage::MemoWritten {
                 provider: provider.clone(),

@@ -206,6 +206,8 @@ pub struct MemoWrite {
     pub watch: Vec<std::path::PathBuf>,
     /// The lifetime `ttl()` recorded, whole seconds.
     pub ttl: Option<std::time::Duration>,
+    /// The lines the leaf's render raised, which a hit replays.
+    pub log: Vec<crate::protocol::LogLine>,
 }
 
 /// Store each memo a resolution's cached leaves rendered, after its value has
@@ -753,21 +755,37 @@ impl<'a> Resolver<'a> {
         // The frame goes on once everything the render reads is bound, so
         // the renders that binding made have come and gone: whatever runs
         // while it is on top is this render.
+        let leaf = matches!(frame, Frame::Leaf(_));
         self.frames.push(frame);
         // `comb[...]` reads what the render asks for, so `comb` is a lazy
         // node rather than a prefetched value.
-        let rendered = if refs.contains(&Ref::Dynamic("comb".to_string())) {
-            self.render_with_lazy_comb(src, key, bound, &refs)
-        } else {
-            let context = self.context(None, bound);
-            self.as_leaf(key, || {
-                with_ctx(self.ctx().clone(), || {
-                    evaluate_node(self.jinja().env(), src, key, context)
+        let render = || {
+            if refs.contains(&Ref::Dynamic("comb".to_string())) {
+                self.render_with_lazy_comb(src, key, bound, &refs)
+            } else {
+                let context = self.context(None, bound);
+                self.as_leaf(key, || {
+                    with_ctx(self.ctx().clone(), || {
+                        evaluate_node(self.jinja().env(), src, key, context)
+                    })
                 })
-            })
+            }
         };
+        // A leaf's lines are kept for its memo, `info` and above (`debug` too
+        // where the read asks for it), and are the read's as well.
+        let (rendered, lines) = if leaf {
+            let min = if crate::library::log::wanted(crate::protocol::Level::Debug) {
+                crate::protocol::Level::Debug
+            } else {
+                crate::protocol::Level::Info
+            };
+            crate::library::log::capture(min, "template", true, render)
+        } else {
+            (render(), Vec::new())
+        };
+        crate::library::log::extend(lines.clone());
         if let Some(Frame::Leaf(leaf)) = self.frames.pop() {
-            self.settle(leaf, &rendered);
+            self.settle(leaf, &rendered, lines);
         }
         rendered
     }
@@ -775,12 +793,29 @@ impl<'a> Resolver<'a> {
     /// What a leaf's `cache()` decided, once the leaf has rendered: a hit is
     /// as old as its memo; a miss that rendered is queued to be written back
     /// with what it recorded, and one that failed writes nothing.
-    fn settle(&mut self, leaf: Leaf, rendered: &Result<Option<JsonValue>, ResolveError>) {
+    fn settle(
+        &mut self,
+        leaf: Leaf,
+        rendered: &Result<Option<JsonValue>, ResolveError>,
+        lines: Vec<crate::protocol::LogLine>,
+    ) {
         self.last_hit = leaf.cached == Some(Cached::Hit);
         match (leaf.cached, rendered) {
             (Some(Cached::Hit), _) => {
-                if let Some(memo) = &leaf.memo {
+                if let Some(memo) = leaf.memo {
                     self.aged(memo.age_ms);
+                    // The lines the render that stored the memo raised are
+                    // the value's: replayed, from the memo.
+                    let replayed = memo
+                        .log
+                        .into_iter()
+                        .map(|mut line| {
+                            line.origin = "memo".into();
+                            line.key = Some(leaf.key.clone());
+                            line
+                        })
+                        .collect();
+                    crate::library::log::extend(replayed);
                 }
             }
             (Some(Cached::Miss(hash)), Ok(value)) => self.memos.push(MemoWrite {
@@ -790,6 +825,7 @@ impl<'a> Resolver<'a> {
                 data: value.clone(),
                 watch: leaf.paths,
                 ttl: leaf.ttl,
+                log: lines,
             }),
             _ => {}
         }

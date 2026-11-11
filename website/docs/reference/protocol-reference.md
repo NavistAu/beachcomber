@@ -206,6 +206,7 @@ A template leaf whose expression pipes through `| cache()` has its value stored 
 - `hash` — the hash the client computed when it stored the memo, 16 lowercase hex digits. Absent once an invalidation has dropped it: a memo with no hash is a miss for every reader.
 - `stale` — whether the memo is past its `ttl`; `age_ms` — how long since it was stored.
 - `data` — the leaf's value. Absent for a **memo of absence**: a leaf that rendered nothing is remembered as having rendered nothing, and `null` is never stored.
+- `log` — the lines the render that stored the memo raised (as a `get`'s [`log`](#response-format) lines), sent only to a `get` that asked for a `log`; omitted when there are none. A client that takes the memo replays them as the read's own, with `origin` `memo`.
 
 A memo is found as a static record is: up the chain from the requested path, nearest first, so a memo stored at a directory serves the directories below it. It is read only through its template: with no template at an address there is no memo half. The daemon does not decide a hit: the client compares the hash with its own and takes the memo only when they are equal and the memo is not stale.
 
@@ -295,6 +296,7 @@ Store what a template leaf's `| cache()` computed. The client's resolver sends i
 - `data` (optional) — the leaf's value. Absent (or `null`) stores a memo of absence.
 - `watch` (optional) — the absolute paths whose change invalidates the memo.
 - `ttl` (optional) — how long the memo is valid, whole seconds and at least `1s`, as a `put`'s.
+- `log` (optional) — the lines the leaf's render raised, as a `get`'s `log` lines: `info` and above, `debug` too when the read asked for it. Kept within a log's bounds (16 lines of 512 bytes) and sent back in the memo half to a `get` that asks for a `log`; not part of `<p>:cache.<field>`.
 
 The write replaces the memo at that address and directory — its value, its stored keys and its age together — and any memo at an address above or below it there, and notifies the namespace's watchers at `path`. A memo's `hash`, `watch`, `poll` and `decay` are read back through `<p>:cache.<field>`, its value through `<p>:memo.<field>` and the memo half. Response: `{"ok": true}`.
 

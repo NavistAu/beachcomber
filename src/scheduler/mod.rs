@@ -3036,6 +3036,7 @@ mod tests {
                 hash: H.into(),
                 watch: watch.clone(),
                 ttl_secs,
+                log: Vec::new(),
             },
         );
         let key = memo_key("k", None, node);
@@ -3146,6 +3147,7 @@ mod tests {
                 hash: H.into(),
                 watch: watch.clone(),
                 ttl_secs: None,
+                log: Vec::new(),
             },
         );
         handle

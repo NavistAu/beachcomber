@@ -1049,6 +1049,7 @@ fn memo_request(write: &resolve::MemoWrite) -> Result<Request, CombError> {
             .map(|p| p.to_string_lossy().into_owned())
             .collect(),
         ttl: write.ttl.map(|d| format!("{}s", d.as_secs())),
+        log: write.log.clone(),
     })
 }
 

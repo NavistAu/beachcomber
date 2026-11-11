@@ -90,7 +90,8 @@ pub(super) fn cache_facet_tree(
 ) -> Option<serde_json::Value> {
     let rest = &libbeachcomber::key::format_address(path);
     let merged = cache.read_merged(provider, requested, reached, registry, Layers::All);
-    let Answered { merged, half } = answer(cache, registry, provider, path, requested, merged);
+    let Answered { merged, half } =
+        answer(cache, registry, provider, path, requested, merged, false);
     let value = merged.as_ref().and_then(|m| {
         if path.is_empty() {
             Some(crate::provider::Value::Object(m.fields.clone()))
@@ -239,7 +240,8 @@ pub(super) fn layers_response(
     let provider = plan.provider.as_str();
     let requested = &plan.requested_path;
     let merged = cache.read_merged(provider, requested, instances, registry, Layers::All);
-    let Answered { merged, half } = answer(cache, registry, provider, &[], requested, merged);
+    let Answered { merged, half } =
+        answer(cache, registry, provider, &[], requested, merged, false);
 
     // The address of the template string that answers `tail`: `tail`
     // itself, or the string above it the walk stops on.

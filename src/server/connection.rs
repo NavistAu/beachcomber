@@ -98,6 +98,7 @@ async fn handle_request(ctx: &Ctx, request: &Request) -> Response {
             data,
             watch,
             ttl,
+            log,
         } => {
             handle_memo(
                 ctx,
@@ -107,6 +108,7 @@ async fn handle_request(ctx: &Ctx, request: &Request) -> Response {
                 data.as_ref(),
                 watch,
                 ttl.as_deref(),
+                log,
             )
             .await
         }

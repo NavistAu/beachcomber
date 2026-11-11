@@ -167,6 +167,11 @@ pub enum Request {
         watch: Vec<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         ttl: Option<String>,
+        /// The lines the leaf's render raised (`info` and above, `debug`
+        /// too when its read asked for them), which a later `get` that asks
+        /// for its log is sent in the memo half, for a hit to replay.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        log: Vec<LogLine>,
     },
     Introspect {
         subject: IntrospectSubject,
@@ -623,6 +628,7 @@ mod tests {
                 data: None,
                 watch: Vec::new(),
                 ttl: None,
+                log: Vec::new(),
             })
             .unwrap(),
             serde_json::json!({"op": "memo", "key": "p.f", "hash": "0000000000000000"})
@@ -666,6 +672,7 @@ mod tests {
                 data: Some(serde_json::json!("prod")),
                 watch: vec!["/h/.kube/config".into()],
                 ttl: Some("10m".into()),
+                log: vec![LogLine::new(Level::Warn, "template", "slow")],
             },
         ] {
             let line = serde_json::to_string(&request).unwrap();

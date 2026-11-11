@@ -2296,6 +2296,7 @@ fn a_miss_renders_and_queues_a_write_with_the_leafs_final_output() {
         data: Some(json!("X")),
         watch: paths.to_vec(),
         ttl: Some(std::time::Duration::from_secs(600)),
+        log: Vec::new(),
     };
     assert_eq!(traced.memos, std::slice::from_ref(&want));
     assert!(f.writes.is_empty(), "traced: the caller writes");

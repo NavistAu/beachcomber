@@ -61,6 +61,9 @@ pub struct Memo {
     pub age_ms: u128,
     /// The leaf's value; `None` for a memo of absence.
     pub data: Option<JsonValue>,
+    /// The lines the render that stored it raised, sent only to a read that
+    /// asks for its log.
+    pub log: Vec<crate::protocol::LogLine>,
 }
 
 impl Memo {
@@ -73,6 +76,10 @@ impl Memo {
             stale: half.get("stale").and_then(JsonValue::as_bool)?,
             age_ms: half.get("age_ms").and_then(JsonValue::as_u64)?.into(),
             data: half.get("data").cloned().filter(|d| !d.is_null()),
+            log: half
+                .get("log")
+                .and_then(|l| serde_json::from_value(l.clone()).ok())
+                .unwrap_or_default(),
         })
     }
 }
@@ -138,6 +145,8 @@ impl Leaf {
 }
 
 /// What the resolver knows about the render running now.
+// A resolution holds a few, on a stack it pushes and pops: no gain in boxing.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
 pub enum Frame {
     /// A text rendered for a surface, stored nowhere: `-f`, `comb eval`, a
@@ -445,6 +454,7 @@ mod tests {
             stale: false,
             age_ms: 7,
             data,
+            log: Vec::new(),
         }
     }
 
@@ -679,6 +689,7 @@ mod tests {
                 stale,
                 age_ms: 1,
                 data: None,
+                log: Vec::new(),
             })
         };
         let takes =
@@ -792,6 +803,7 @@ mod tests {
                 stale: false,
                 age_ms: 4,
                 data: Some(json!("prod")),
+                log: Vec::new(),
             })
         );
         assert_eq!(
@@ -800,7 +812,8 @@ mod tests {
                 hash: None,
                 stale: true,
                 age_ms: 4,
-                data: None
+                data: None,
+                log: Vec::new(),
             })
         );
         assert_eq!(Memo::from_half(&json!("x")), None);

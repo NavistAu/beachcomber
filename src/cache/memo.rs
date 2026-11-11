@@ -16,6 +16,8 @@ pub struct MemoWrite {
     pub watch: Vec<String>,
     /// How long it is valid for, in seconds.
     pub ttl_secs: Option<u64>,
+    /// The lines the leaf's render raised.
+    pub log: Vec<libbeachcomber::protocol::LogLine>,
 }
 
 /// A template leaf's memo as a read finds it ([`Cache::memo_record`]): the
@@ -33,6 +35,10 @@ pub struct MemoRecord {
     pub entry: Option<String>,
 }
 
+/// Where a memo's lines are kept among its stored keys: sent in a memo half
+/// to a read that asks for its log, and not part of its `:cache` answer.
+const LOG_KEY: &str = "log";
+
 impl MemoRecord {
     /// The stored hash, while an invalidation has not dropped it.
     pub fn hash(&self) -> Option<&str> {
@@ -49,8 +55,9 @@ impl MemoRecord {
     }
 
     /// The memo as a `get`'s memo half carries it: `hash` (while it has
-    /// one), `stale`, `age_ms` and `data` (absent for a memo of absence).
-    pub fn half(&self) -> serde_json::Value {
+    /// one), `stale`, `age_ms` and `data` (absent for a memo of absence);
+    /// with `log`, the lines its render raised (absent when none).
+    pub fn half(&self, log: bool) -> serde_json::Value {
         let mut half = serde_json::Map::new();
         if let Some(hash) = self.hash() {
             half.insert("hash".into(), hash.into());
@@ -64,6 +71,14 @@ impl MemoRecord {
         {
             half.insert("data".into(), data);
         }
+        if log
+            && let Some(lines) = self
+                .keys
+                .get(LOG_KEY)
+                .and_then(|l| serde_json::to_value(l).ok())
+        {
+            half.insert(LOG_KEY.into(), lines);
+        }
         half.into()
     }
 
@@ -73,7 +88,7 @@ impl MemoRecord {
         let mut answer = serde_json::Map::new();
         answer.insert("age_ms".into(), (self.age_ms as u64).into());
         answer.insert("source".into(), Origin::Memo.presented_label().into());
-        for (key, v) in &self.keys {
+        for (key, v) in self.keys.iter().filter(|(k, _)| *k != LOG_KEY) {
             if let Ok(v) = serde_json::to_value(v) {
                 answer.insert(key.clone(), v);
             }
@@ -100,6 +115,17 @@ impl Cache {
         if let Some(ttl_secs) = memo.ttl_secs {
             keys.insert("poll".to_string(), poll_key(ttl_secs, 0));
             keys.insert("decay".to_string(), Value::Int(1));
+        }
+        if !memo.log.is_empty() {
+            // Off the socket: kept within a log's bounds whatever was sent.
+            let mut log = Vec::new();
+            libbeachcomber::library::log::merge(&mut log, memo.log);
+            if let Some(log) = serde_json::to_value(log)
+                .ok()
+                .and_then(|l| Value::from_json(&l))
+            {
+                keys.insert(LOG_KEY.to_string(), log);
+            }
         }
         if !memo.watch.is_empty() {
             keys.insert(
@@ -383,6 +409,7 @@ mod tests {
             hash: hash.to_string(),
             watch: Vec::new(),
             ttl_secs,
+            log: Vec::new(),
         }
     }
 
@@ -461,7 +488,7 @@ mod tests {
         assert_eq!(record.data, None);
         assert_eq!(record.hash(), Some(H1));
         assert_eq!(
-            record.half(),
+            record.half(false),
             serde_json::json!({"hash": H1, "stale": false, "age_ms": record.age_ms as u64}),
             "no data, never null"
         );

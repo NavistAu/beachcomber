@@ -724,6 +724,7 @@ pub(super) async fn handle_get(
         template_path,
         plan.layers,
         merged,
+        log.is_some(),
     );
     // `--force` computes the value afresh: a Source re-executes, and
     // a template renders past its memo on the client. A static

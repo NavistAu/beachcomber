@@ -114,6 +114,7 @@ pub(super) fn answer(
     address: &[String],
     path: &Dir,
     result: Option<MergedRead>,
+    log: bool,
 ) -> Answered {
     let mut returned =
         crate::shape::provider::returned_over(cache, registry, provider, path, result);
@@ -129,7 +130,15 @@ pub(super) fn answer(
     if let Some(template) = &half.template
         && cache.has_memos(provider)
     {
-        half.memo = memo_half(cache, provider, path, registry.home(), template, &half.at);
+        half.memo = memo_half(
+            cache,
+            provider,
+            path,
+            registry.home(),
+            template,
+            &half.at,
+            log,
+        );
     }
     if half.template.is_some()
         && let Some(var) = var
@@ -142,6 +151,7 @@ pub(super) fn answer(
                 registry.home(),
                 &var,
                 crate::shape::seeded::VAR_NODE,
+                log,
             );
         }
         half.var = Some(var);
@@ -155,7 +165,7 @@ pub(super) fn answer(
 /// The memo half for `template`, which stands at `at`: for a string, the
 /// memo of that leaf a read from `path` finds ([`Cache::memo_record`]); for a
 /// group, the tree of its leaves' memos, a leaf with none left out. `None`
-/// when no leaf has one.
+/// when no leaf has one. With `log`, each carries the lines its render raised.
 pub(super) fn memo_half(
     cache: &Cache,
     provider: &str,
@@ -163,11 +173,12 @@ pub(super) fn memo_half(
     home: &Home,
     template: &serde_json::Value,
     at: &str,
+    log: bool,
 ) -> Option<serde_json::Value> {
     match template {
         serde_json::Value::String(_) => cache
             .memo_record(provider, path, home, at)
-            .map(|memo| memo.half()),
+            .map(|memo| memo.half(log)),
         serde_json::Value::Object(group) => {
             let tree: serde_json::Map<String, serde_json::Value> = group
                 .iter()
@@ -175,7 +186,7 @@ pub(super) fn memo_half(
                     let below = libbeachcomber::key::push(at, k);
                     Some((
                         k.clone(),
-                        memo_half(cache, provider, path, home, t, &below)?,
+                        memo_half(cache, provider, path, home, t, &below, log)?,
                     ))
                 })
                 .collect();
@@ -286,7 +297,8 @@ pub(super) fn read_watch_value(
     let provider = &target.provider;
     // A watch frame carries the same two halves a `get` does.
     let merged = cache.read_merged(provider, requested, reached, registry, layers);
-    let Answered { merged, half } = answer_read(cache, registry, target, requested, layers, merged);
+    let Answered { merged, half } =
+        answer_read(cache, registry, target, requested, layers, merged, false);
     resolve_halves(&merged, target, half)
 }
 
@@ -305,6 +317,7 @@ pub(super) fn answer_read(
     requested: &Dir,
     layers: crate::cache::Layers,
     merged: Option<MergedRead>,
+    log: bool,
 ) -> Answered {
     let provider = &target.provider;
     if layers != crate::cache::Layers::All
@@ -315,7 +328,15 @@ pub(super) fn answer_read(
             half: TemplateHalf::default(),
         };
     }
-    answer(cache, registry, provider, &target.path, requested, merged)
+    answer(
+        cache,
+        registry,
+        provider,
+        &target.path,
+        requested,
+        merged,
+        log,
+    )
 }
 
 #[cfg(test)]
