@@ -46,4 +46,4 @@ sdks/c/conformance_runner
 flake.lock
 
 # hush secret-set refs (local to this machine)
-.hush.sh
+.shuhi.sh
