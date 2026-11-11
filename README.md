@@ -1799,7 +1799,7 @@ Connect with `SOCK_STREAM`. Each message is a JSON object followed by `\n`. Each
 
 ### Operations
 
-**`hello`:** Version negotiation. Clients should send this as the first op on any new connection. Returns `{"ok":true,"data":{"daemon_version":"0.10.1","protocol_version":"1.0"},"age_ms":0}` (JSON key order is not part of the contract). `protocol_version` follows semver (major.minor) and is independent of the daemon binary version.
+**`hello`:** Version negotiation. Clients should send this as the first op on any new connection. Returns `{"ok":true,"data":{"daemon_version":"0.10.1","protocol_version":"2.0"},"age_ms":0}` (JSON key order is not part of the contract). `protocol_version` follows semver (major.minor) and is independent of the daemon binary version.
 
 **`get`:** Read a cached value. If the key has never been computed, the daemon executes the provider synchronously before returning. Successive calls are served from cache until the value's refresh interval elapses. `ok: true` with no `data` key is a miss: the provider exists but returned no value (e.g., a git provider queried outside a repository).
 

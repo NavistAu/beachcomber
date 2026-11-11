@@ -13,7 +13,7 @@ use std::time::Duration;
 
 /// Wire protocol version. Semver: minor = additive, major = breaking.
 /// See `website/docs/reference/protocol-reference.md` for what counts as additive vs breaking.
-pub const PROTOCOL_VERSION: &str = "1.0";
+pub const PROTOCOL_VERSION: &str = "2.0";
 
 fn is_false(b: &bool) -> bool {
     !*b

@@ -105,7 +105,7 @@ Arguments that are more than a string are JSON text: client options, a `put`'s d
 These are real envelopes from a client made with `bc_client_new(NULL)`:
 
 ```text
-bc_hello            {"data":{"daemon_version":"0.9.1+sha.e22096aa","protocol_version":"1.0"},"ok":true}
+bc_hello            {"data":{"daemon_version":"0.9.1+sha.e22096aa","protocol_version":"2.0"},"ok":true}
 bc_get hostname.short   {"data":"myhost","ok":true}
 bc_get nosuch.thing     {"data":null,"ok":true}
 bc_eval "{{ _.exec('echo hi') }}"

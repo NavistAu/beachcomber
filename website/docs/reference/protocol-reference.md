@@ -128,10 +128,10 @@ Version negotiation. Clients should send this as the first op on any new connect
 Response:
 
 ```json
-{"ok":true,"data":{"daemon_version":"0.10.1","protocol_version":"1.0"},"age_ms":0}
+{"ok":true,"data":{"daemon_version":"0.10.1","protocol_version":"2.0"},"age_ms":0}
 ```
 
-`protocol_version` follows semver (major.minor) and is independent of `daemon_version`, the daemon binary's build version.
+`protocol_version` follows semver (major.minor) and is independent of `daemon_version`, the daemon binary's build version. It is `2.0` from comb 0.11.0: `1.0` had not moved since `hello` was added, though ops were added and the wire broke. A client should treat another major as a daemon it cannot talk to. The shipped clients do not yet: they compare `daemon_version` only, and a mismatch is reported, not refused.
 
 ### `get`
 
