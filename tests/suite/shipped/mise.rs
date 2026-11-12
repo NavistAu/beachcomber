@@ -9,7 +9,7 @@ use std::path::Path;
 use tempfile::TempDir;
 
 /// One tool's entry as `mise ls --current --json` records it.
-fn entry(version: &str, config: &Path) -> Value {
+pub(super) fn entry(version: &str, config: &Path) -> Value {
     json!([{
         "version": version,
         "requested_version": version,
@@ -22,7 +22,7 @@ fn entry(version: &str, config: &Path) -> Value {
 
 /// `PATH` for the daemon this process starts: `bin`, if any, then the system
 /// directories, and never the developer's own `mise`.
-fn daemon_path(bin: Option<&Path>) {
+pub(super) fn daemon_path(bin: Option<&Path>) {
     let path = match bin {
         Some(bin) => format!(
             "{}:{}",
@@ -37,7 +37,7 @@ fn daemon_path(bin: Option<&Path>) {
 }
 
 /// A stand-in `mise` in a directory of its own, `body` its script.
-fn stub_mise(body: &str) -> TempDir {
+pub(super) fn stub_mise(body: &str) -> TempDir {
     let bin = TempDir::new().unwrap();
     crate::common::daemon::tool(bin.path(), "mise", &format!("#!/bin/sh\n{body}\n"));
     bin
@@ -60,11 +60,11 @@ fn global_config(s: &Scenario) -> std::path::PathBuf {
     s.daemon.xdg.join("mise/config.toml")
 }
 
-/// The project's instance answers what mise resolves there, a tool named
-/// with a colon and dots included; the instance at `~` answers what it
-/// resolves at `~`.
+/// The project's instance holds the tools its own mise file sets, a tool
+/// named with a colon and dots included, and leaves out what comes from a
+/// global file; the instance at `~` holds every tool mise resolves there.
 #[test]
-fn one_source_answers_project_then_global() {
+fn a_project_holds_its_own_overrides_and_home_the_globals() {
     let (s, _bin) = recorded(
         |s| {
             let mut ls = serde_json::Map::new();
@@ -83,7 +83,7 @@ fn one_source_answers_project_then_global() {
 
     assert_eq!(
         s.get("mise", &sub),
-        Some(json!({"node": "20.1.0", "go": "1.22.0", "go:golang.org/x/tools/gopls": "0.16.0"}))
+        Some(json!({"node": "20.1.0", "go:golang.org/x/tools/gopls": "0.16.0"}))
     );
     assert_eq!(
         s.get("mise['go:golang.org/x/tools/gopls']", &sub),
@@ -96,53 +96,19 @@ fn one_source_answers_project_then_global() {
     );
 }
 
-/// The instances cascade: a tool the project's instance lacks comes from
-/// the instance at `~`.
+/// The project answers alone: a tool only the global config sets is absent
+/// there, not filled in from `~`; a directory in no project reads `~`'s.
 #[test]
-fn a_tool_the_project_lacks_comes_from_home() {
+fn the_project_answers_alone_and_elsewhere_reads_home() {
     let (s, _bin) = recorded(
         |s| json!({"node": entry("20.1.0", &s.project.join("mise.toml"))}),
         json!({"go": [{"version": "1.22.0"}]}),
     );
     assert_eq!(s.get("mise.node", &s.project), Some(json!("20.1.0")));
-    assert_eq!(s.get("mise.go", &s.project), Some(json!("1.22.0")));
-}
-
-/// The deliberate difference: an instance records every tool mise resolves
-/// at its directory, a global one included, where the Rust Source kept only
-/// what that directory's own files set. A read answers the same; the
-/// project's record, which `comb status` lists, holds `go` too.
-#[test]
-fn the_project_instance_records_every_tool_mise_resolves_there() {
-    let (s, _bin) = recorded(
-        |s| {
-            json!({
-                "node": entry("20.1.0", &s.project.join("mise.toml")),
-                "go": entry("1.22.0", &global_config(s)),
-            })
-        },
-        json!({"go": [{"version": "1.22.0"}]}),
-    );
-    assert_eq!(s.get("mise.go", &s.project), Some(json!("1.22.0")));
-    let out = s
-        .daemon
-        .command(&s.project)
-        .args(["status", "-f", "json", "--filter", "provider=mise"])
-        .output()
-        .expect("run comb status");
-    let rows: Vec<Value> = String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .filter(|l| !l.is_empty())
-        .map(|l| serde_json::from_str(l).unwrap())
-        .collect();
-    let project = s.project.display().to_string();
-    let mut at_project: Vec<&str> = rows
-        .iter()
-        .filter(|r| r["path"] == json!(project))
-        .filter_map(|r| r["field"].as_str())
-        .collect();
-    at_project.sort_unstable();
-    assert_eq!(at_project, ["go", "node"], "{rows:#?}");
+    assert_eq!(s.get("mise.go", &s.project), None);
+    let elsewhere = s.daemon.home.join("elsewhere");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    assert_eq!(s.get("mise", &elsewhere), Some(json!({"go": "1.22.0"})));
 }
 
 /// No `mise` to run, or one that fails: the Source fails, and a read is a
@@ -173,9 +139,9 @@ fn mise_absent_from_path_is_a_miss() {
     assert_eq!(s.get("mise", &s.project), None);
 }
 
-/// The shipped Source: one, `tools`, rooted, answering for the provider node
-/// whose tool names it cannot list; watching mise's two file names under its
-/// root and mise's global config directory, as the Rust Source did.
+/// The shipped Source: one, `tools`, rooted and nearest, answering for the
+/// provider node whose tool names it cannot list; watching mise's file names
+/// under its root and mise's global config directory.
 #[test]
 fn mise_provider_is_one_source_with_a_tool_sentinel() {
     let registry = crate::common::registry::with_shipped_defaults();
@@ -189,8 +155,13 @@ fn mise_provider_is_one_source_with_a_tool_sentinel() {
     assert!(schedule.poll.is_none(), "expected Watch, got {schedule:?}");
     assert_eq!(
         schedule.watch,
-        vec!["mise.toml".to_string(), ".mise.toml".into()]
+        vec![
+            "mise.toml".to_string(),
+            ".mise.toml".into(),
+            ".config/mise.toml".into()
+        ]
     );
+    assert!(schedule.nearest);
     assert_eq!(schedule.watch_abs.len(), 1);
     assert!(
         schedule.watch_abs[0].ends_with("/mise"),

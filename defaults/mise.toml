@@ -3,8 +3,15 @@
 enabled.template = "{{ 'mise' | which }}"
 
 [daemon.providers.mise.sources.tools]
-# The tools mise has in effect: each tool's version, the first of its entries in `mise ls --current --json`, run at the nearest directory holding a mise.toml or .mise.toml (walking to /), else at ~. mise's answer there already takes in the configs above it and the global one; a directory reads each tool from its nearest instance that has it. Runs again when either file, or mise's global config directory, changes; backed off from a minute after repeated failures.
-root = "{% set a = _.lup('mise.toml', root=true) %}{% set b = _.lup('.mise.toml', root=true) %}{{ (a if a and (not b or a | length >= b | length) else b) | dirname }}"
-data = "{{ _.exec(['mise', 'ls', '--current', '--json']) | fromjson }}"
-result = "{{ data | map('first') | map('pluck', 'version') }}"
-return = "{{ result | watch('mise.toml', '.mise.toml', '$XDG_CONFIG_HOME/mise') | failback('60s', 3) }}"
+# The tools a directory's own mise files set: at the nearest directory holding a mise.toml or .mise.toml (walking to /), the tools whose entry in `mise ls --current --json` comes from a file in that directory; anywhere else, the instance at ~, which holds every tool mise resolves there: the global ones. The nearest instance answers alone, so a project's value holds its overrides only, and ~'s the global tools. Runs again when a mise file there, or mise's global config directory, changes; backed off from a minute after repeated failures.
+root = "{% set a = _.lup('mise.toml', root=true) %}{% set b = _.lup('.mise.toml', root=true) %}{{ (a if a and (not b or a | length >= b | length) else b) | dirname or '~' | realpath }}"
+data = '''{% set here = '.' | realpath ~ '/' %}
+{% set everything = here == '~' | realpath ~ '/' %}
+{% set own = namespace(tools={}) %}
+{% for name, entries in _.exec(['mise', 'ls', '--current', '--json']) | fromjson | items %}
+  {% set e = entries | first %}
+  {% if e and (everything or (e.source.path | realpath | default('')) is startingwith(here)) %}{% set own.tools = _.merge(own.tools, {name: e.version}) %}{% endif %}
+{% endfor %}
+{{ own.tools }}'''
+result = "{{ data }}"
+return = "{{ result | watch('mise.toml', '.mise.toml', '.config/mise.toml', '$XDG_CONFIG_HOME/mise') | failback('60s', 3) | nearest }}"

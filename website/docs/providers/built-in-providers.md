@@ -291,21 +291,22 @@ $ comb g.j python
 
 ### mise
 
-The tools [mise](https://mise.jdx.dev) has in effect: each tool's version as `mise ls --current` reports it, run at
-the nearest directory with a `mise.toml` or `.mise.toml`, else at `~`. That answer already includes mise's global
-tools and its parent configs. A tool the project does not set comes from `~`. Reruns when either file, or mise's global
-config directory, changes. Needs `mise` on the daemon's `PATH`; without it the provider is off.
+The tools [mise](https://mise.jdx.dev) sets for a directory. At a project, the nearest directory with a `mise.toml` or
+`.mise.toml`, it holds only the tools that project's own mise files set, as `mise ls --current` reports them there. Its
+overrides: a tool from your global config is not in it. Anywhere else it reads `~`, which holds every tool mise
+resolves there, the global ones. The nearest instance answers alone, so a project never shows the global tools beside
+its own. Reruns when a mise file there, or mise's global config directory, changes. Needs `mise` on the daemon's
+`PATH`; without it the provider is off.
 
 ```shell-session
 $ comb g.j mise
 {
-  "node": "22.22.1",
-  "python": "3.13.3",
+  "cargo:cargo-nextest": "0.9.140",
   "rust": "1.95.0"
 }
 ```
 
-There is one field per tool, named as mise names it: `comb g mise.node`. A name holding a `.` or `/` (such as
+There is one field per tool, named as mise names it: `comb g mise.rust`. A name holding a `.` or `/` (such as
 `go:golang.org/x/tools/gopls`) is quoted in brackets: `comb g 'mise["go:golang.org/x/tools/gopls"]'`.
 
 ### asdf

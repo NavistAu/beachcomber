@@ -2080,7 +2080,10 @@ result.x = "{{ data }}"
         }
         assert!(!rooted.is_empty());
         for (provider, source, nearest) in rooted {
-            let want = matches!(provider.as_str(), "git" | "direnv" | "python" | "terraform");
+            let want = matches!(
+                provider.as_str(),
+                "git" | "direnv" | "mise" | "python" | "terraform"
+            );
             assert_eq!(nearest, want, "{provider}.{source}");
         }
     }
