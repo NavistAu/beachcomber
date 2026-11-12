@@ -502,7 +502,12 @@ pub fn evaluate(
             },
         },
     };
-    Ok((!(value.is_undefined() || value.is_none())).then_some(value))
+    // A text template whose tags printed only whitespace has nothing to show:
+    // absent, as `none` is, never `""`. Text with no tags is its own literal.
+    let blank = form == Form::Template
+        && (src.contains("{{") || src.contains("{%"))
+        && value.as_str().is_some_and(|s| s.trim().is_empty());
+    Ok((!(value.is_undefined() || value.is_none() || blank)).then_some(value))
 }
 
 /// What an engine error says, without the engine's own framing. An error
@@ -917,7 +922,8 @@ mod line_tests {
     }
 
     /// One `{{ }}` keeps its type; anything else is text, `none` in it
-    /// nothing; `none` and undefined are absent.
+    /// nothing; `none` and undefined are absent, as is text whose tags print
+    /// only whitespace.
     #[test]
     fn evaluate_keeps_one_tags_type_and_renders_the_rest_as_text() {
         let value = |src: &str| {
@@ -934,6 +940,11 @@ mod line_tests {
         assert_eq!(value(""), Some(json!("")));
         assert_eq!(value("{{ none }}"), None);
         assert_eq!(value("{{ d.nope.x }}"), None);
+        // Tags that print only whitespace are absent, never `""`; text with
+        // no tags stays its literal self.
+        assert_eq!(value("{{ none }} {{ none }}"), None);
+        assert_eq!(value("{% for x in [] %}{{ x }} {% endfor %}"), None);
+        assert_eq!(value("   "), Some(json!("   ")));
     }
 
     /// Not compiling is a compile error; failing while it runs is a runtime

@@ -95,7 +95,7 @@ with client.session() as session:
 stored nowhere — the same value `comb eval` prints; `eval("{{ p.f }}")` and
 `get("p.f")` agree. The template accepts a single `{{ expr }}` tag, or
 literal text/several tags — the former keeps the expression's natural type,
-the latter is always a string (a source with no tags at all is its literal
+the latter is a string, absent when its tags print only whitespace (a source with no tags at all is its literal
 text).
 
 `_.exec()` inside a template runs only on a client created with

@@ -489,7 +489,7 @@ A value expression is written in one of three forms:
 
 - **Single tag** — exactly one `{{ expr }}` spanning the whole argument apart from surrounding whitespace (`'{{ git.dirty }} '` is still a single tag): keeps the expression's natural type (bool, number, object, …). A `none` or undefined value is absent: `comb e` prints nothing, and `bc_eval` and every SDK's `eval` give null, as for a miss.
 - **Statements, then one tag** — statements and comments, then the only `{{ expr }}`, with nothing but whitespace between (`'{% set x = 1 %}{{ x }}'`): the statements run and the expression keeps its natural type, so this is the number `1`. A macro's, a call's or a block `set`'s body does not count, since it prints nothing where it stands. The statements print nothing: one that does (a `{% call %}`) is `a typed line's statements print nothing`.
-- **Template** — literal text and/or more than one tag: always string-valued. A source with no tags at all is a template too — it renders to its own literal text.
+- **Template** — literal text and/or more than one tag: string-valued. One whose tags print only whitespace (`'{{ a }} {{ b }}'` with both absent, a loop over nothing) is absent, never `""`. A source with no tags at all is a template too — it renders to its own literal text, whitespace included.
 
 ```sh
 # Template (two tags + literal text) — a formatted prompt segment, string-valued
@@ -516,8 +516,8 @@ in `comb e`'s own output, which is text: a bool prints `true`, and so does the
 string `"true"`. Where it does show is in the shapes text cannot flatten — an
 object prints as an aligned tree and an array as one item per line — and in every
 programmatic consumer: `bc_eval`, and so every SDK's `eval`, hands back a typed
-value (bool, number, object, array). A template is always a string in all of
-them.
+value (bool, number, object, array). A template is a string in all of
+them, or absent when its tags printed only whitespace.
 
 **Exit codes:** `0` on success, an absent value included (it prints nothing); `1` for an absent value under `--strict`; `2` on error.
 

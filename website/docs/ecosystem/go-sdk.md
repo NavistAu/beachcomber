@@ -122,7 +122,7 @@ Subscribe to a key's value — what `Get` answers for it — and receive it agai
 
 #### `c.Eval(templateStr, cwd string, env map[string]string) (any, error)`
 
-`Eval` renders a template stored nowhere — the same value `comb eval` prints, decoded as `Get`'s is, `nil` when it renders nothing — so `Eval("{{ p.f }}", …)` and `Get("p.f", …)` agree. `cwd` and `env` mean what they mean for `Get`. `templateStr` accepts a single `{{ expr }}` tag (keeps the expression's natural type) or literal text/several tags (always a string — a source with no tags at all is its literal text). `_.exec()` inside a template runs only on a client constructed with `beachcomber.WithExec(true)`; it is off by default, and a template that calls it then fails with `exec() is disabled in this context`.
+`Eval` renders a template stored nowhere — the same value `comb eval` prints, decoded as `Get`'s is, `nil` when it renders nothing — so `Eval("{{ p.f }}", …)` and `Get("p.f", …)` agree. `cwd` and `env` mean what they mean for `Get`. `templateStr` accepts a single `{{ expr }}` tag (keeps the expression's natural type) or literal text/several tags (a string, absent when its tags print only whitespace — a source with no tags at all is its literal text). `_.exec()` inside a template runs only on a client constructed with `beachcomber.WithExec(true)`; it is off by default, and a template that calls it then fails with `exec() is disabled in this context`.
 
 #### `c.Session() (*Session, error)`
 

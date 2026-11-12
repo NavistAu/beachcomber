@@ -230,7 +230,7 @@ transport only.
 
 `template_str` accepts a single `{{ expr }}` tag, or literal text/several
 tags — the former keeps the expression's natural type, the latter is
-always a string (a source with no tags at all is its literal text).
+a string, absent when its tags print only whitespace (a source with no tags at all is its literal text).
 
 ### `Client:watch(key [, opts])` → `WatchStream | nil, Error`
 

@@ -146,7 +146,7 @@ read as `get` reads them: no `cwd` is the global entry. **FFI transport
 only**.
 
 `templateStr` accepts a single `{{ expr }}` tag (keeps the expression's
-natural type), or literal text/several tags (always a string — a source
+natural type), or literal text/several tags (a string, absent when its tags print only whitespace — a source
 with no tags at all is its literal text).
 
 ```typescript

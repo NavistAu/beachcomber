@@ -174,7 +174,7 @@ branch, err = client.Get("git.branch", "/path/to/repo", nil, beachcomber.Force, 
 
 `templateStr` accepts a single `{{ expr }}` tag, or literal text/several
 tags — the former keeps the expression's natural type, the latter is
-always a string (a source with no tags at all is its literal text).
+a string, absent when its tags print only whitespace (a source with no tags at all is its literal text).
 
 `_.exec()` inside a template runs only on a client constructed with
 `beachcomber.WithExec(true)`; it is off by default, and a template that

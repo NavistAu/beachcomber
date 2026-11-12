@@ -106,7 +106,7 @@ Subscribe to a key's value — what `get(key, opts)` answers for it — and rece
 
 #### `client.eval(templateStr, opts?)`
 
-Render a template that is stored nowhere — the same value `comb eval` prints. Every ref resolves exactly as it would inside a stored template, so `eval('{{ p.f }}')` and `get('p.f')` agree. `opts` is `{ cwd?, env? }`, read as `get` reads them: no `cwd` is the global entry. `templateStr` accepts a single `{{ expr }}` tag (keeps the expression's natural type), or literal text/several tags (always a string — a source with no tags at all is its literal text). FFI transport only.
+Render a template that is stored nowhere — the same value `comb eval` prints. Every ref resolves exactly as it would inside a stored template, so `eval('{{ p.f }}')` and `get('p.f')` agree. `opts` is `{ cwd?, env? }`, read as `get` reads them: no `cwd` is the global entry. `templateStr` accepts a single `{{ expr }}` tag (keeps the expression's natural type), or literal text/several tags (a string, absent when its tags print only whitespace — a source with no tags at all is its literal text). FFI transport only.
 
 ```typescript
 const value = await client.eval('{{ myapp.workspace }}', {
