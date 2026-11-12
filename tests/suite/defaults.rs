@@ -288,13 +288,25 @@ fn every_shipped_template_compiles() {
                     && table.contains_key("template"),
                 "{name}: a client provider holds its template, its vars and macros"
             );
-            let vars = table.get("var").and_then(|v| v.as_table()).into_iter();
-            let leaves = table["template"]
-                .as_table()
-                .unwrap()
-                .iter()
-                .chain(vars.flatten());
-            for (field, leaf) in leaves {
+            // A template may nest (`template.style.glyph.full`): every leaf.
+            fn leaves<'a>(
+                at: String,
+                v: &'a toml::Value,
+                out: &mut Vec<(String, &'a toml::Value)>,
+            ) {
+                match v.as_table() {
+                    Some(t) => t
+                        .iter()
+                        .for_each(|(k, v)| leaves(format!("{at}.{k}"), v, out)),
+                    None => out.push((at, v)),
+                }
+            }
+            let mut found = Vec::new();
+            leaves("template".into(), &table["template"], &mut found);
+            if let Some(vars) = table.get("var") {
+                leaves("var".into(), vars, &mut found);
+            }
+            for (field, leaf) in found {
                 let src = leaf
                     .as_str()
                     .unwrap_or_else(|| panic!("{name}: {field} is not a string"));
@@ -309,7 +321,7 @@ fn every_shipped_template_compiles() {
             }
         }
     }
-    assert_eq!(checked, 38, "every shipped template and var is covered");
+    assert_eq!(checked, 54, "every shipped template and var is covered");
 }
 
 /// A shipped Source is documented where it is written: the line under its
@@ -437,6 +449,7 @@ fn shipped_layers_parse_and_load_with_no_errors() {
         "sudo",
         "talos",
         "terraform",
+        "tools",
         "uname",
         "uptime",
         "user",

@@ -113,6 +113,21 @@ Open work only. What shipped is `CHANGELOG.md`; how things got fixed is git hist
       IO tier (`glob`, `stat`, `read`) but no `exec()`; needs a `which` filter (a `$PATH` lookup, none when absent).
       Open: a tool installed while the daemon runs stays off until the next reload, unless the `$PATH` directories
       are watched. `comb check providers` says why: `disabled (enabled rendered false)`.
+- [ ] **`tools`: weigh a project's languages, as GitHub does.** Today the nearest marker names the languages, so a
+      repository root shows its root marker's language only, never its secondary ones (this repo: rust, not the go,
+      ts and lua of `sdks/`). A share by file count per extension (`git ls-files`, one exec, watched on the index)
+      or by lines would give a dominant language and the extras above a threshold, as a `langs` order and an
+      `extras` field. Open: counts or bytes, the threshold, generated and vendored files.
+- [ ] **`tools`: how current each version is.** Colour a version by how far behind it is (a patch, a minor, a major
+      behind the latest: a scale from the tool's colour to a warning), mark one nearing or past its end of support,
+      and show the count of known CVEs against it. comb should wrap a companion, not hold the data: endoflife.date's
+      API has release cycles and EOL dates, OSV.dev the vulnerabilities by package and version, and mise
+      (`mise latest`, `mise outdated`) the newest version. A Source per signal, polled daily (`_.url()` or the
+      companion's CLI), giving fields beside `versions` (`behind`, `eol`, `cves`) that the templates colour. Open:
+      a small companion CLI that answers all three for a `tool@version`, so other prompts can use it too.
+- [ ] **`tools`: version sources besides mise.** A tool's version is mise's, else the one on `PATH`. Add asdf
+      (`.tool-versions`, already read by the `asdf` provider), nvm (`.nvmrc`), pyenv (`.python-version`), rustup
+      (`rust-toolchain.toml`) and the like, each tried before `PATH`, as users of them turn up.
 - [ ] have claude-scanline `put` the usage stats into a static namespace every time it gets hit, so they read back as
       cached values.
 

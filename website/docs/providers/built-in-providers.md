@@ -307,7 +307,72 @@ $ comb g.j mise
 ```
 
 There is one field per tool, named as mise names it: `comb g mise.rust`. A name holding a `.` or `/` (such as
-`go:golang.org/x/tools/gopls`) is quoted in brackets: `comb g 'mise["go:golang.org/x/tools/gopls"]'`.
+`go:golang.org/x/tools/gopls`) is quoted in brackets: `comb g 'mise["go:golang.org/x/tools/gopls"]'`. For the tools a
+prompt should show, read [`tools`](#tools).
+
+### tools
+
+The languages a project uses and the versions of their tools, for a prompt. The project is the nearest directory,
+walking up, holding a marker; its markers name its languages, and each language brings its tools:
+
+| Marker | Language | Tools |
+|---|---|---|
+| `Cargo.toml` | rust | rust, cargo |
+| `package.json` | node | node, npm |
+| `go.mod` | go | go |
+| `pyproject.toml`, `requirements.txt`, `setup.py` | python | python, and uv with a `uv.lock` |
+| `Gemfile` | ruby | ruby |
+| `composer.json` | php | php |
+| `pom.xml`, `build.gradle`, `build.gradle.kts` | java | java |
+
+A nested project is its own: in a repository's `website/` holding a `package.json`, `tools` is node's, not the
+repository's rust. A tool's version is mise's at the project, from the project's file or the global one; cargo, which
+mise installs with rust, is mise's rust. A tool mise does not list is the one on the daemon's `PATH`, by its version
+command (`npm --version`). A tool with no version found is left out. Reruns when a marker, `uv.lock` or a mise file
+changes, and every 10 minutes while read.
+
+| Field | Value |
+|---|---|
+| `langs` | the languages, in the table's order |
+| `list` | each tool: `name`, `lang`, `parent` (the language's first tool, for the others), `version`, `minor` (major.minor), `major`, `via` (`mise` or `path`) |
+| `versions` | `{tool: version}` |
+
+`tools.prompt` is the one to put in a prompt. It shows one of the styles under `tools.style`, the emoji style with
+major.minor versions by default. `comb get tools.style` shows every style at once:
+
+| Template | Each tool as |
+|---|---|
+| `style.glyph.<part>` | its Nerd Fonts glyph and version |
+| `style.colour.<part>` | its glyph in its colour, and version |
+| `style.emoji.<part>` | its emoji, else its glyph in colour (node has no emoji), and version |
+| `style.label.<part>` | its name and version |
+
+`<part>` is `full` (the whole version), `minor` (major.minor) or `major`. To change the prompt, point it at another
+style. A put takes effect on the next read, and without `--global` holds for one directory and below:
+
+```shell-session
+$ comb put --global tools:template.prompt '"{{ tools.style.label.full }}"'
+```
+
+A tool that comes with its language, such as cargo with rust, is shown only when its version differs from the
+language's. Each is absent where there are no tools. The glyphs, colours and emoji are the vars `glyph`, `colour` and
+`emoji`, maps by tool name; a var in your config replaces one. The colours are GitHub's language colours lightened to
+7:1 contrast on a `#151515` background:
+
+```toml
+[client.providers.tools]
+var.colour = "{{ {'rust': '#ffb380', 'node': '#9fdf8a'} }}"
+```
+
+Every style is one macro, `tools:macro.show`, for a style of your own:
+`{% from 'tools:macro.show' import show %}{{ show(comb.tools.list, 'colour', 'minor', glyph, colour, emoji) or none }}`.
+
+```shell-session
+$ comb g tools.prompt
+🦀 1.95
+$ comb g tools.style.label.minor website
+node 24.22 npm 11.19
+```
 
 ### asdf
 

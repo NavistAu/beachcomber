@@ -2082,7 +2082,7 @@ result.x = "{{ data }}"
         for (provider, source, nearest) in rooted {
             let want = matches!(
                 provider.as_str(),
-                "git" | "direnv" | "mise" | "python" | "terraform"
+                "git" | "direnv" | "mise" | "python" | "terraform" | "tools"
             );
             assert_eq!(nearest, want, "{provider}.{source}");
         }

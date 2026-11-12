@@ -44,6 +44,7 @@ mod packages;
 mod python;
 mod sudo;
 mod terraform;
+mod tools;
 mod uname;
 mod uptime;
 mod user;

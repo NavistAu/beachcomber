@@ -1,0 +1,105 @@
+[daemon.providers.tools.sources.detect]
+# A project: the nearest directory, walking up to /, holding one of the markers below. A directory with none above it has no tools.
+root = '''{%- set found = namespace(dir=none) -%}
+{%- for marker in ['Cargo.toml', 'package.json', 'go.mod', 'pyproject.toml', 'requirements.txt', 'setup.py', 'Gemfile', 'composer.json', 'pom.xml', 'build.gradle', 'build.gradle.kts'] -%}
+  {%- set dir = _.lup(marker, root=true) | dirname -%}
+  {%- if dir and (found.dir is none or dir | length > found.dir | length) %}{% set found.dir = dir %}{% endif -%}
+{%- endfor -%}
+{{- found.dir -}}'''
+# The project's languages, by the markers in its directory, in the order below, and each language's tools: rust brings cargo, node npm, python uv where there is a uv.lock. A tool's version is mise's at the project (its own file's, else the global one); cargo, which mise installs with rust but does not list, is mise's rust; any other tool mise does not list is the one on PATH, by its version command. A tool with no version found is left out.
+data = '''{%- set languages = [
+  ['rust', ['Cargo.toml'], ['rust', 'cargo']],
+  ['node', ['package.json'], ['node', 'npm']],
+  ['go', ['go.mod'], ['go']],
+  ['python', ['pyproject.toml', 'requirements.txt', 'setup.py'], ['python'] + (['uv'] if 'uv.lock' | stat else [])],
+  ['ruby', ['Gemfile'], ['ruby']],
+  ['php', ['composer.json'], ['php']],
+  ['java', ['pom.xml', 'build.gradle', 'build.gradle.kts'], ['java']],
+] -%}
+{%- set version_cmd = {'go': ['go', 'version']} -%}
+{%- set part_of = {'cargo': 'rust'} -%}
+{%- set mise = (_.exec(['mise', 'ls', '--current', '--json']) | fromjson) if 'mise' | which else {} -%}
+{%- set out = namespace(langs=[], list=[], versions={}) -%}
+{%- for lang, markers, tools in languages -%}
+  {%- if markers | map('stat') | select | list -%}
+    {%- set out.langs = out.langs + [lang] -%}
+    {%- for tool in tools if tool not in out.versions -%}
+      {%- set found = namespace(version=none, via=none) -%}
+      {%- if mise[tool] -%}
+        {%- set found.version = (mise[tool] | first).version -%}{%- set found.via = 'mise' -%}
+      {%- elif part_of[tool] and mise[part_of[tool]] -%}
+        {%- set found.version = (mise[part_of[tool]] | first).version -%}{%- set found.via = 'mise' -%}
+      {%- elif tool | which -%}
+        {%- set run = _.execa(version_cmd[tool] or [tool, '--version'], ok=[0, 1, 2]) -%}
+        {%- set m = (run.stdout ~ ' ' ~ run.stderr) | regex_search('\d+\.\d+(?:\.\d+)?') -%}
+        {%- if m %}{% set found.version = m[0] %}{% set found.via = 'path' %}{% endif -%}
+      {%- endif -%}
+      {%- if found.version -%}
+        {%- set parts = found.version | regex_search('(\d+)(?:\.(\d+))?') -%}
+        {%- set out.list = out.list + [{
+          'name': tool,
+          'lang': lang,
+          'parent': tools[0] if tool != tools[0] else none,
+          'version': found.version,
+          'minor': (parts[1] ~ ('.' ~ parts[2] if parts[2] else '')) if parts else found.version,
+          'major': parts[1] if parts else found.version,
+          'via': found.via,
+        }] -%}
+        {%- set out.versions = _.merge(out.versions, {tool: found.version}) -%}
+      {%- endif -%}
+    {%- endfor -%}
+  {%- endif -%}
+{%- endfor -%}
+{{- {'langs': out.langs, 'list': out.list, 'versions': out.versions} -}}'''
+result.langs = "{{ data.langs }}"
+# Each tool: its name, its lang, its parent (the language's first tool, for the others: cargo's is rust), version in full and as minor (major.minor) and major, and via (mise or path).
+result.list = "{{ data.list }}"
+result.versions = "{{ data.versions }}"
+# Runs again when a marker, uv.lock or a mise file changes, and every 10 minutes while read, for a tool on PATH that changed under it. Only the nearest project answers.
+return = '''{{ result
+  | watch('Cargo.toml', 'package.json', 'go.mod', 'pyproject.toml', 'requirements.txt', 'setup.py', 'Gemfile', 'composer.json', 'pom.xml', 'build.gradle', 'build.gradle.kts', 'uv.lock', 'mise.toml', '.mise.toml', '$XDG_CONFIG_HOME/mise')
+  | poll('10m')
+  | failback('60s', 3)
+  | nearest }}'''
+
+[client.providers.tools]
+# Each tool's Nerd Fonts glyph, by name (`_.icon()`); a tool not here shows its name.
+var.glyph = "{{ {'rust': 'dev-rust', 'cargo': 'oct-package', 'node': 'dev-nodejs_small', 'npm': 'dev-npm', 'go': 'dev-go', 'python': 'dev-python', 'uv': 'md-package_variant_closed', 'ruby': 'dev-ruby', 'php': 'dev-php', 'java': 'dev-java'} }}"
+# Each tool's colour: GitHub's language colour (a brand's for npm and uv), lightened to 7:1 contrast on a #151515 background.
+var.colour = "{{ {'rust': '#dea584', 'cargo': '#dea584', 'node': '#7cb16e', 'npm': '#e18c8b', 'go': '#0db1da', 'python': '#82a8c7', 'uv': '#e47aed', 'ruby': '#c29a9b', 'php': '#9ba3c3', 'java': '#c89c5e'} }}"
+# Each tool's emoji, where one fits; the emoji forms show the others' glyph in colour.
+var.emoji = "{{ {'rust': '🦀', 'cargo': '📦', 'go': '🐹', 'python': '🐍', 'ruby': '💎', 'php': '🐘', 'java': '☕'} }}"
+# The prompt segment: one of the styles below. Point it at another with a put, `comb put --global tools:template.prompt '"{{ tools.style.label.full }}"'`, or in your config.
+template.prompt = "{{ tools.style.emoji.minor }}"
+# The project's tools, each in a style (head) and a version part: glyph is its Nerd Fonts glyph, colour that glyph in its tool's colour, emoji its emoji (else the coloured glyph), label its name; full is the whole version, minor major.minor, major the major alone. A tool that comes with a language (cargo with rust) shows only where its version differs from the language's.
+template.style.glyph.full = "{% from 'tools:macro.show' import show %}{{ show(comb.tools.list, 'glyph', 'version', glyph, colour, emoji) or none }}"
+template.style.glyph.minor = "{% from 'tools:macro.show' import show %}{{ show(comb.tools.list, 'glyph', 'minor', glyph, colour, emoji) or none }}"
+template.style.glyph.major = "{% from 'tools:macro.show' import show %}{{ show(comb.tools.list, 'glyph', 'major', glyph, colour, emoji) or none }}"
+template.style.colour.full = "{% from 'tools:macro.show' import show %}{{ show(comb.tools.list, 'colour', 'version', glyph, colour, emoji) or none }}"
+template.style.colour.minor = "{% from 'tools:macro.show' import show %}{{ show(comb.tools.list, 'colour', 'minor', glyph, colour, emoji) or none }}"
+template.style.colour.major = "{% from 'tools:macro.show' import show %}{{ show(comb.tools.list, 'colour', 'major', glyph, colour, emoji) or none }}"
+template.style.emoji.full = "{% from 'tools:macro.show' import show %}{{ show(comb.tools.list, 'emoji', 'version', glyph, colour, emoji) or none }}"
+template.style.emoji.minor = "{% from 'tools:macro.show' import show %}{{ show(comb.tools.list, 'emoji', 'minor', glyph, colour, emoji) or none }}"
+template.style.emoji.major = "{% from 'tools:macro.show' import show %}{{ show(comb.tools.list, 'emoji', 'major', glyph, colour, emoji) or none }}"
+template.style.label.full = "{% from 'tools:macro.show' import show %}{{ show(comb.tools.list, 'label', 'version', glyph, colour, emoji) or none }}"
+template.style.label.minor = "{% from 'tools:macro.show' import show %}{{ show(comb.tools.list, 'label', 'minor', glyph, colour, emoji) or none }}"
+template.style.label.major = "{% from 'tools:macro.show' import show %}{{ show(comb.tools.list, 'label', 'major', glyph, colour, emoji) or none }}"
+
+[client.providers.tools.macro]
+# show(list, head, part, glyph, colour, emoji): each tool as its head (glyph, colour, emoji or label) and its version part (version, minor or major), space-separated. A tool with a parent at the same version is left out.
+show = '''{%- macro show(list, head, part, glyph, colour, emoji) -%}
+{%- set shown = namespace(parts=[]) -%}
+{%- for t in list or [] -%}
+  {%- set parent = list | selectattr('name', 'equalto', t.parent) | first if t.parent -%}
+  {%- if not (parent and parent.version == t.version) -%}
+    {%- set g = _.icon(glyph[t.name]) if glyph[t.name] else t.name -%}
+    {%- set h = g -%}
+    {%- if head == 'label' -%}{%- set h = t.name -%}
+    {%- elif head == 'emoji' and emoji[t.name] -%}{%- set h = emoji[t.name] -%}
+    {%- elif head in ['colour', 'emoji'] and colour[t.name] -%}{%- set h = g | fg(colour[t.name]) -%}
+    {%- endif -%}
+    {%- set shown.parts = shown.parts + [h ~ ' ' ~ t[part]] -%}
+  {%- endif -%}
+{%- endfor -%}
+{{- shown.parts | join(' ') -}}
+{%- endmacro -%}'''

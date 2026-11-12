@@ -73,6 +73,7 @@ pub const SHIPPED: &[(&str, &str)] = &[
         "terraform.toml",
         include_str!("../../defaults/terraform.toml"),
     ),
+    ("tools.toml", include_str!("../../defaults/tools.toml")),
     ("uname.toml", include_str!("../../defaults/uname.toml")),
     ("uptime.toml", include_str!("../../defaults/uptime.toml")),
     ("user.toml", include_str!("../../defaults/user.toml")),

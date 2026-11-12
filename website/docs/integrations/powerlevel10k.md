@@ -8,7 +8,7 @@ sidebar_position: 4
 
 powerlevel10k (p10k) is one of the fastest zsh themes. It uses gitstatus — a purpose-built C++ daemon — for git information, tightly integrated into its async rendering pipeline. beachcomber can replace gitstatus as the git data source, consolidating all shell state queries into a single daemon instead of running two.
 
-beachcomber also provides cached data for things p10k does not cover natively, such as mise project tool versions.
+beachcomber also provides cached data for things p10k does not cover natively, such as a project's tool versions.
 
 There are two levels of integration:
 
@@ -76,50 +76,37 @@ function prompt_bc_gcloud() {
 }
 ```
 
-### mise project tools
+### Project tools
 
-Shows tool versions that are overridden at the project level (from a local `mise.toml`), distinguishing them from the global baseline. Only appears in directories with a project-level mise config.
+Shows the project's languages and their tool versions from the [`tools`](../providers/built-in-providers.md#tools)
+provider: rust and cargo in a Rust project, node and npm in a node package. Only appears inside a project.
 
 ```zsh
-typeset -g POWERLEVEL9K_COMB_MISE_FOREGROUND=147
-typeset -g POWERLEVEL9K_COMB_MISE_VISUAL_IDENTIFIER_EXPANSION=$'\uF07C'  # folder-open icon
+typeset -g POWERLEVEL9K_COMB_TOOLS_FOREGROUND=147
 
-function prompt_comb_mise() {
-  local cwd=${(%):-%/}
-  local project
-  project=$(comb g mise "$cwd" 2>/dev/null) || return
-  [[ -z "$project" ]] && return
-
-  local display=()
-  local entry tool ver
-  # `comb g mise "$cwd"` returns one `tool=version` line per project-scoped
-  # tool. Strip the mise backend prefix (e.g. `cargo:cargo-nextest` →
-  # `cargo-nextest`) for a tighter segment.
-  for entry in "${(@f)project}"; do
-    [[ -z "$entry" ]] && continue
-    tool=${entry%%=*}
-    tool=${tool##*:}
-    ver=${entry#*=}
-    display+=("${tool} ${ver}")
-  done
-  p10k segment -f 147 -i $'\uF07C' -t "${(j: | :)display}"
+function prompt_comb_tools() {
+  setopt localoptions extendedglob
+  local line
+  line=$(comb g tools.prompt "${(%):-%/}" 2>/dev/null) || return
+  [[ -n $line ]] || return
+  # Colour codes take no columns: mark them %{ %} so p10k measures right.
+  line=${line//(#b)($'\e'\[[0-9;]##m)/%\{${match[1]}%\}}
+  p10k segment -f 147 -t "$line"
 }
 ```
 
-The beachcomber mise provider exposes one string field per tool name. Fields are scoped by query context:
-
-- `comb g mise "$cwd"` — project-scoped tools (from a local `mise.toml`); returns newline-separated `tool=version` lines
-- `comb g mise` (no path) — global tools (from `~/.config/mise/`); same format
-- `comb g mise.node "$cwd"` — single tool version string, e.g. `20.11.0`
+`tools.prompt` is the emoji style with major.minor versions; `comb put --global tools:template.prompt '"{{
+tools.style.label.full }}"'` changes it, on the next prompt (see [tools](../providers/built-in-providers.md#tools)). For the tools a
+project's own mise file overrides, read `comb g mise "$cwd" -f sh`.
 
 ### Adding complementary segments to the prompt
 
-After defining the functions, patch the elements array in the overlay. This example inserts `comb_mise` before the `time` segment:
+After defining the functions, patch the elements array in the overlay. This example inserts `comb_tools` before the `time` segment:
 
 ```zsh
 typeset -ga _comb_rpe=()
 for _comb_e in "${POWERLEVEL9K_RIGHT_PROMPT_ELEMENTS[@]}"; do
-  [[ "$_comb_e" == "time" ]] && _comb_rpe+=(comb_mise)
+  [[ "$_comb_e" == "time" ]] && _comb_rpe+=(comb_tools)
   _comb_rpe+=("$_comb_e")
 done
 POWERLEVEL9K_RIGHT_PROMPT_ELEMENTS=("${_comb_rpe[@]}")
