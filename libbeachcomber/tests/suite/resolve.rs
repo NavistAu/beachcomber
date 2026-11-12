@@ -701,6 +701,35 @@ fn an_address_past_a_template_can_miss_inside_the_rendered_object() {
     );
 }
 
+/// A template's layer has no value where its render holds nothing, so the
+/// layers below it answer there: a template at `p.prompt` does not hide a
+/// put at `p.prompt.glyph.minor`. Where the render does hold the address, it
+/// wins over the data beneath.
+#[test]
+fn an_address_past_a_template_its_render_lacks_reads_the_data_below() {
+    let env = spec_env();
+    let mut f = MapFetch::default();
+    let under = |rest: &str, d: Value| Got {
+        data: Some(d),
+        age_ms: Some(30),
+        ..tmpl_rest(json!("{{ {'held': 'rendered'} }}"), rest)
+    };
+    f.seed(
+        "p.prompt.glyph.minor",
+        Some(CWD),
+        under("glyph.minor", json!("put")),
+    );
+    f.seed("p.prompt.held", Some(CWD), under("held", json!("put")));
+    assert_eq!(
+        resolve("p.prompt.glyph.minor", &inputs(&env), &mut f),
+        Ok(Some(json!("put")))
+    );
+    assert_eq!(
+        resolve("p.prompt.held", &inputs(&env), &mut f),
+        Ok(Some(json!("rendered")))
+    );
+}
+
 // ── 2. Walking a rendered value ───────────────────────────────────────────────
 
 #[test]

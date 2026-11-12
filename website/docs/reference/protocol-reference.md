@@ -185,7 +185,7 @@ The two halves are addressed from different places. The data half sits at the in
 `template` is a JSON tree whose string leaves are value expressions the **client** renders and whose objects are groups; the daemon never renders one. The client is `libbeachcomber::resolve`: `comb get`, `bc_get` and every SDK's `get` answer with the rendered value, and none of them hands back this two-halved response. A caller that wants the template unrendered reads it as a facet, `<provider>:template.<field>`. Walking the key through the tree:
 
 - landing on an object or a string with the key consumed → that node is `template`;
-- landing on a string with segments left over → that string is `template` and the remainder, rejoined in canonical form, is `rest`;
+- landing on a string with segments left over → that string is `template` and the remainder, rejoined in canonical form, is `rest`. The client walks `rest` into what the string renders; where the render holds nothing there, the template has no value at the key and the client answers with the `data` half, so a template at `p.a` never hides a put or a Source at `p.a.b`;
 - a miss, or a non-string scalar in the way or at the address → neither field is attached.
 
 A `get` on a facet key (`<provider>:<facet>…`) is already inside a facet and never carries a template half; it reads the facet's own records as `data`.

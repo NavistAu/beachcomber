@@ -226,7 +226,8 @@ pub(super) fn cache_facet_node(
 /// records, template records, then a leaf a provider line computed, then each
 /// link's `put`, `config(…)` seeds and Source records ([`Cache::layer_stacks`])
 /// — with the one the read takes marked `answered`: at a template leaf the
-/// nearest memo while it is live, else the template. A leaf's list also holds a record
+/// nearest memo while it is live, else the template; under a template string
+/// that stands above the leaf, the data the read falls through to. A leaf's list also holds a record
 /// standing as a scalar on an ancestor of it, which hides the leaf in that
 /// layer. A tree shaped like the value, an array at each leaf; a leaf key is
 /// its array alone.
@@ -332,7 +333,10 @@ pub(super) fn layers_response(
             .filter(|(t, _)| t == leaf || under(leaf, t))
             .map(|(_, r)| r.clone())
             .collect();
-        if let Some(string) = template_string(leaf) {
+        // A template string above the leaf answers it only if what it renders
+        // holds the leaf, which only a client render can tell; the read falls
+        // through to the layers below where it does not, so the data answers.
+        if let Some(string) = template_string(leaf).filter(|s| s == leaf) {
             let live = cache
                 .memo_record(provider, requested, registry.home(), &string)
                 .filter(crate::cache::MemoRecord::is_live);

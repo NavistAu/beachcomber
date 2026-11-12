@@ -600,6 +600,9 @@ impl<'a> Resolver<'a> {
             // A leaf template. An address that ran past it is walked into
             // what it rendered — an object by key, an array by index. Its
             // memo is the leaf's, at the address the template stands at.
+            // Where the render holds nothing at that address, the template
+            // layer has no value there and the layers below it answer: a
+            // template at `p.a` never hides a put or a Source at `p.a.b`.
             Some(JsonValue::String(t)) => {
                 let leaf = leaf_key(key, got.rest.as_deref());
                 let value = self.render(&t, key, &leaf, got.memo.as_ref())?;
@@ -607,7 +610,15 @@ impl<'a> Resolver<'a> {
                     self.memo_hit = self.last_hit;
                 }
                 Ok(match got.rest {
-                    Some(rest) => value.and_then(|v| walk(v, &rest)),
+                    Some(rest) => match value.and_then(|v| walk(v, &rest)) {
+                        Some(v) => Some(v),
+                        None => self.used(Some(Got {
+                            template: None,
+                            rest: None,
+                            memo: None,
+                            ..got
+                        })),
+                    },
                     None => value,
                 })
             }
