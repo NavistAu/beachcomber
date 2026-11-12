@@ -243,8 +243,7 @@ impl libbeachcomber::resolve::Fetch for OneTemplate {
 }
 
 #[test]
-fn every_shipped_template_is_a_single_tag_that_compiles() {
-    use libbeachcomber::eval::{Form, classify};
+fn every_shipped_template_compiles() {
     use libbeachcomber::resolve::{Inputs, ResolveError, Slot, resolve};
 
     let env = HashMap::new();
@@ -283,9 +282,11 @@ fn every_shipped_template_is_a_single_tag_that_compiles() {
             );
             let table = table.as_table().unwrap();
             assert!(
-                table.keys().all(|k| k == "template" || k == "var")
+                table
+                    .keys()
+                    .all(|k| k == "template" || k == "var" || k == "macro")
                     && table.contains_key("template"),
-                "{name}: a client provider holds its template, and its vars"
+                "{name}: a client provider holds its template, its vars and macros"
             );
             let vars = table.get("var").and_then(|v| v.as_table()).into_iter();
             let leaves = table["template"]
@@ -297,7 +298,6 @@ fn every_shipped_template_is_a_single_tag_that_compiles() {
                 let src = leaf
                     .as_str()
                     .unwrap_or_else(|| panic!("{name}: {field} is not a string"));
-                assert_eq!(classify(src), Form::SingleTag, "{name}: {field} = {src}");
                 // Compiling is the question; a runtime failure (here, every
                 // exec() call, since exec is off) is a different answer from a
                 // template that does not compile.
