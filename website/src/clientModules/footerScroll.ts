@@ -8,7 +8,16 @@ if (ExecutionEnvironment.canUseDOM) {
     return window.location.pathname === '/' || window.location.pathname === '';
   }
 
+  // The home page's hero carries the name, so the navbar's brand (and, on a small screen, the whole navbar)
+  // waits until the hero has scrolled away.
+  function updateBrand() {
+    const hero = isLandingPage() ? document.getElementById('hero') : null;
+    // the page starts with the hero in view (custom.css keys on #hero), so only its leaving is marked
+    document.documentElement.classList.toggle('hero-gone', !!hero && hero.getBoundingClientRect().bottom <= 0);
+  }
+
   function updateFooter() {
+    updateBrand();
     const footer = document.querySelector('.footer') as HTMLElement;
     if (!footer) return;
 

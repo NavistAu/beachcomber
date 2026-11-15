@@ -45,7 +45,8 @@
 
 .grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  /* never fewer than two columns, as a featured card spans two */
+  grid-template-columns: repeat(auto-fill, minmax(min(140px, calc(50% - 0.4375rem)), 1fr));
   gap: 0.875rem;
 }
 
