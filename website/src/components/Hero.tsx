@@ -2,11 +2,24 @@ import {useIntersectionObserver} from '../hooks/useIntersectionObserver';
 import HeroAnimation from './HeroAnimation';
 import styles from './Hero.module.css';
 
+const COPY = (
+  <>
+    Obsessively fast<sup>µs</sup> cache engine.<br />
+    Lightspeed shells, reduced load.<br />
+    Store anything, automate everything.
+  </>
+);
+
+function toProblem(e: React.MouseEvent) {
+  e.preventDefault();
+  document.getElementById('problem')?.scrollIntoView({behavior: 'smooth'});
+}
+
 export default function Hero(): JSX.Element {
   const [ref, isVisible] = useIntersectionObserver(0.1);
 
   return (
-    <section className={styles.hero}>
+    <section className={styles.hero} id="hero">
       <div className={styles.titleSpace}>
       <div
         className={`${styles.header} ${isVisible ? styles.visible : ''}`}
@@ -14,8 +27,7 @@ export default function Hero(): JSX.Element {
       >
         <h1 className={styles.title}>beach<span className={styles.bin}>comb</span>er</h1>
         <p className={styles.tagline}>
-          Faster prompts, less load. comb works out your shell's state once, and every prompt, status
-          bar, editor and agent reads it in microseconds.
+          {COPY}
         </p>
 
         <div className={styles.metrics}>
@@ -40,10 +52,7 @@ export default function Hero(): JSX.Element {
           <a
             className={styles.ctaSecondary}
             href="#problem"
-            onClick={(e) => {
-              e.preventDefault();
-              document.getElementById('problem')?.scrollIntoView({behavior: 'smooth'});
-            }}
+            onClick={toProblem}
           >
             Learn More &darr;
           </a>
@@ -58,7 +67,7 @@ export default function Hero(): JSX.Element {
           <span className={styles.registrySep} aria-hidden="true">·</span>
           <a className={styles.registryLink} href="https://rubygems.org/gems/libbeachcomber" target="_blank" rel="noopener noreferrer">RubyGems</a>
           <span className={styles.registrySep} aria-hidden="true">·</span>
-          <a className={styles.registryLink} href="https://luarocks.org/modules/navist/libbeachcomber" target="_blank" rel="noopener noreferrer">LuaRocks</a>
+          <a className={styles.registryLink} href="https://luarocks.org/modules/jhogendorn/libbeachcomber" target="_blank" rel="noopener noreferrer">LuaRocks</a>
         </div>
       </div>
 
@@ -68,6 +77,16 @@ export default function Hero(): JSX.Element {
       <div className={styles.headerFade} aria-hidden="true" />
 
       <HeroAnimation />
+
+      {/* a phone's hero ends with the copy and a way on, in place of the tagline and buttons */}
+      <div className={styles.foot}>
+        <p className={styles.lead}>{COPY}</p>
+        <a className={styles.next} href="#problem" aria-label="Learn more" onClick={toProblem}>
+          <svg viewBox="0 0 24 24" width="28" height="28" aria-hidden="true">
+            <path d="M5 9l7 7 7-7" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+        </a>
+      </div>
     </section>
   );
 }

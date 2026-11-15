@@ -1,5 +1,5 @@
 .section {
-  padding: 6rem 2rem;
+  padding: 3rem 2rem;
   background: var(--ifm-background-surface-color);
   color: var(--ifm-font-color-base);
 }
@@ -20,17 +20,6 @@
 .container.visible {
   opacity: 1;
   transform: translateY(0);
-}
-
-.label {
-  font-family: var(--ifm-heading-font-family);
-  font-size: 0.7rem;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.15em;
-  color: var(--ifm-color-primary);
-  margin-bottom: 0.75rem;
-  text-align: center;
 }
 
 .heading {
@@ -81,42 +70,56 @@
   color: #06d6f0;
 }
 
+.prose strong {
+  color: var(--ifm-font-color-base);
+}
+
+/* the count: how many answers comb gives while gitstatus gives one, in a box of its own */
 .callout {
-  display: flex;
-  gap: 1.25rem;
-  background: rgba(8, 145, 178, 0.08);
-  border-radius: 8px;
-  padding: 1.5rem;
-  align-items: stretch;
+  text-align: center;
+  padding: 2rem;
+  border-radius: 12px;
+  background: var(--ifm-background-color);
+  border: 1px solid var(--ifm-color-emphasis-200);
+  box-shadow: 0 2px 16px rgba(0, 0, 0, 0.06);
 }
 
 [data-theme='dark'] .callout {
-  background: rgba(6, 214, 240, 0.06);
+  box-shadow: 0 2px 16px rgba(0, 0, 0, 0.3);
 }
 
-.calloutBar {
-  width: 3px;
-  border-radius: 3px;
-  background: var(--ifm-color-primary);
-  flex-shrink: 0;
+.calloutNumber {
+  font-family: var(--ifm-heading-font-family);
+  font-size: clamp(3.5rem, 14vw, 6rem);
+  font-weight: 800;
+  color: var(--ifm-color-primary);
+  line-height: 1;
+  letter-spacing: -0.04em;
+  font-variant-numeric: tabular-nums;
 }
 
-.calloutBody {
-  flex: 1;
-}
-
-.calloutBody p {
-  font-size: 1rem;
-  line-height: 1.7;
+.calloutText {
+  font-size: 1.05rem;
   color: var(--ifm-font-color-secondary);
-  margin: 0;
+  max-width: 24rem;
+  margin: 0.5rem auto 0;
+  line-height: 1.5;
 }
 
-.calloutBody strong {
-  color: var(--ifm-font-color-base);
-  font-weight: 700;
+@media (max-width: 760px) {
+  .section { padding: 1.5rem 1.25rem; }
+  .heading { font-size: 1.6rem; margin-bottom: 1rem; }
+  .prose { margin-bottom: 1rem; }
+  .callout { padding: 1rem; }
+  .calloutNumber { font-size: 3rem; }
+  .prose p, .calloutText { font-size: 1rem; line-height: 1.55; margin-bottom: 0.6rem; }
+  .calloutText { margin-bottom: 0; }
 }
 
-[data-theme='dark'] .calloutBody strong {
-  color: #e8dfc8;
+/* A short phone (an iPhone with Safari's bars showing is 664px) keeps the page to one screen: the count says
+   what the last paragraph does. */
+@media (max-width: 760px) and (max-height: 700px) {
+  .prose p:last-child { display: none; }
+  .prose p, .calloutText { font-size: 0.95rem; }
+  .heading { font-size: 1.5rem; }
 }

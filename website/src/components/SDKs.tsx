@@ -1,4 +1,6 @@
 import {useState} from 'react';
+import IconCopy from '@theme/Icon/Copy';
+import IconSuccess from '@theme/Icon/Success';
 import {useIntersectionObserver} from '../hooks/useIntersectionObserver';
 import styles from './SDKs.module.css';
 
@@ -15,6 +17,25 @@ const installTabs: InstallTab[] = [
   {id: 'cargo', label: 'Cargo', command: 'cargo install beachcomber'},
 ];
 
+// Copies the install command, and shows a tick for a moment once it has.
+function CopyButton({text}: {text: string}): JSX.Element {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      type="button"
+      className={styles.copy}
+      aria-label={copied ? 'Copied' : 'Copy command'}
+      title="Copy"
+      onClick={() => navigator.clipboard.writeText(text).then(() => {
+        setCopied(true);
+        window.setTimeout(() => setCopied(false), 1500);
+      })}
+    >
+      {copied ? <IconSuccess /> : <IconCopy />}
+    </button>
+  );
+}
+
 export default function SDKs(): JSX.Element {
   const [ref, isVisible] = useIntersectionObserver(0.1);
   const [activeTab, setActiveTab] = useState('brew');
@@ -23,17 +44,12 @@ export default function SDKs(): JSX.Element {
 
   return (
     <>
-    <section className={styles.section}>
+    <section className={`${styles.section} page`}>
       <div
         className={`${styles.container} ${isVisible ? styles.visible : ''}`}
         ref={ref as React.RefObject<HTMLDivElement>}
       >
-        <div className={styles.label}>Get started</div>
         <h2 className={styles.heading}>Get started</h2>
-        <p className={styles.subheading}>
-          The daemon starts automatically on first query. Integrate with your prompt, status bar, or
-          editor to start seeing the benefits.
-        </p>
 
         <div className={styles.terminalWrapper}>
           <div className={styles.terminalHeader}>
@@ -55,33 +71,17 @@ export default function SDKs(): JSX.Element {
             </div>
           </div>
           <div className={styles.terminalBody}>
-            <span className={styles.prompt}>$</span>
-            <span className={styles.command}> {activeInstall?.command}</span>
+            <div>
+              <span className={styles.prompt}>$</span>
+              <span className={styles.command}> {activeInstall?.command}</span>
+            </div>
+            <CopyButton text={activeInstall?.command ?? ''} />
           </div>
         </div>
 
         <div className={styles.links}>
-          <a className={styles.link} href="/docs/getting-started/set-up">
-            Quick Start
-          </a>
-          <a className={styles.link} href="/docs/getting-started/installation">
-            Docs
-          </a>
-          <a
-            className={styles.link}
-            href="https://github.com/NavistAu/beachcomber"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            GitHub
-          </a>
-          <a
-            className={styles.link}
-            href="https://crates.io/crates/beachcomber"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            cargo install
+          <a className={styles.quickStart} href="/docs/getting-started/set-up">
+            Quick start &rarr;
           </a>
         </div>
 

@@ -300,6 +300,18 @@ body::before {
   padding-bottom: 3rem;
 }
 
+/* On a phone the footer wraps to three lines: it ends the page instead of covering a fifth of the screen. */
+@media (max-width: 760px) {
+  .footer {
+    position: static !important;
+    opacity: 1 !important;
+  }
+
+  .main-wrapper {
+    padding-bottom: 0;
+  }
+}
+
 /* Terminal output shown with its colours: the same block as a code block, with
    the colours a terminal would draw, each at least 7:1 on the block. */
 pre.terminal {
@@ -334,4 +346,71 @@ pre.terminal {
 /* A short code value in a table cell stays on one line. */
 .theme-doc-markdown td > code:only-child {
   white-space: nowrap;
+}
+
+/* the navbar's name and logo, hidden while the home page's hero shows them (see clientModules/footerScroll.ts) */
+.navbar__brand {
+  transition: opacity 0.2s, visibility 0.2s;
+}
+
+html:has(#hero):not(.hero-gone) .navbar__inner .navbar__brand {
+  opacity: 0;
+  visibility: hidden;
+}
+
+/* Where the navbar is only a menu button, the home page lets the hero have the whole screen: the navbar floats,
+   and slides in once the hero has gone. */
+@media (max-width: 996px) {
+  html:has(#hero) .navbar {
+    position: fixed;
+    left: 0;
+    right: 0;
+    transition: transform 0.25s ease, opacity 0.25s ease;
+  }
+
+  html:has(#hero):not(.hero-gone) .navbar {
+    transform: translateY(-100%);
+    opacity: 0;
+    pointer-events: none;
+  }
+}
+
+/* The home page reads a page at a time: the hero and each section after it fill the screen, and a scroll
+   settles on the next one rather than anywhere between. A section taller than the screen scrolls within. */
+html:has(#hero) {
+  scroll-snap-type: y mandatory;
+  scroll-padding-top: var(--ifm-navbar-height);
+}
+
+#hero {
+  scroll-snap-align: start;
+}
+
+html:has(#hero) .page {
+  scroll-snap-align: start;
+  min-height: calc(100svh - var(--ifm-navbar-height));
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+/* a page's content takes the page's width, however wide its code is */
+html:has(#hero) .page > * {
+  width: 100%;
+  min-width: 0;
+}
+
+html:has(#hero) .footer {
+  scroll-snap-align: end;
+}
+
+/* Where the navbar floats in once the hero has gone, a page settles at the very top and keeps the navbar's
+   height clear at its own top instead. */
+@media (max-width: 996px) {
+  html:has(#hero) { scroll-padding-top: 0; }
+
+  html:has(#hero) .page {
+    min-height: 100svh;
+    padding-top: calc(var(--ifm-navbar-height) + 1rem) !important;
+  }
 }

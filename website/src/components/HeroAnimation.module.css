@@ -48,13 +48,13 @@
   top: 0;
   bottom: 0;
   width: 2px;
-  background: linear-gradient(to bottom, rgba(0, 0, 0, 0) 30%, rgba(0, 0, 0, 0.2) 50%);
+  background: linear-gradient(to bottom, rgba(0, 0, 0, 0) 30%, rgba(0, 0, 0, 0.2) 50%, rgba(0, 0, 0, 0.2) 85%, rgba(0, 0, 0, 0));
   z-index: 5;
   pointer-events: none;
 }
 
 [data-theme='dark'] .wiper {
-  background: linear-gradient(to bottom, rgba(255, 255, 255, 0) 30%, rgba(255, 255, 255, 0.3) 50%);
+  background: linear-gradient(to bottom, rgba(255, 255, 255, 0) 30%, rgba(255, 255, 255, 0.3) 50%, rgba(255, 255, 255, 0.3) 85%, rgba(255, 255, 255, 0));
 }
 
 .wiperHandle {
@@ -163,7 +163,7 @@
   margin: 0;
 }
 
-/* Under the sources, each side's counters run in one row of four, large, with the bar beneath them. */
+/* Under the sources, each side's counters run in one row of four, large. */
 .statsContainer[data-mode='below'] {
   bottom: auto;
   padding: 0;
@@ -189,13 +189,6 @@
 
 .statsContainer[data-mode='below'] .statItem dt {
   font-size: 0.95rem;
-}
-
-.statsContainer[data-mode='below'] .bar {
-  width: 100%;
-  margin-top: 1rem;
-  height: 8px;
-  border-radius: 4px;
 }
 
 /* Each side's name heads its counters: BC on the left, AD on the right. */
@@ -229,29 +222,6 @@
 .statsGroup.hub .era { flex-direction: row-reverse; }
 .statsContainer[data-mode='below'] .statsGroup.hub .statItem dd,
 .statsContainer[data-mode='below'] .statsGroup.hub .statItem dt { text-align: right; }
-.statsGroup.hub .bar { margin-left: auto; transform: scaleX(-1); }
-
-/* time spent waiting, both sides on one scale */
-.bar {
-  margin-top: 0.5rem;
-  height: 6px;
-  width: 14rem;
-  border-radius: 3px;
-  background: rgba(127, 127, 127, 0.18);
-  overflow: hidden;
-}
-
-.bar span {
-  display: block;
-  height: 100%;
-  width: 2px;
-  border-radius: 3px;
-}
-
-.statsGroup.chaos .bar span { background: #842405; }
-.statsGroup.hub .bar span { background: #04505f; }
-[data-theme='dark'] .statsGroup.chaos .bar span { background: #ff9a73; }
-[data-theme='dark'] .statsGroup.hub .bar span { background: #06d6f0; }
 
 .statItem {
   display: grid;
@@ -276,7 +246,72 @@
   color: var(--ifm-font-color-base);
 }
 
+/* a value's unit, in the text face, close to its number */
+.unit {
+  font-family: var(--ifm-font-family-base);
+  font-size: 0.75em;
+  font-weight: 600;
+  margin-left: 0.2em;
+}
+
 .statsGroup.chaos dd { color: #842405; }
 .statsGroup.hub dd { color: #04505f; }
 [data-theme='dark'] .statsGroup.chaos dd { color: #ff9a73; }
 [data-theme='dark'] .statsGroup.hub dd { color: #06d6f0; }
+
+/* Below 1100px the scene fills the hero under the title, and stands on the counters, cut to the two that tell
+   the story. Each label is said once, in the middle, with BC's values to its left and AD's to its right. */
+@media (max-width: 1100px) {
+  .animationContainer {
+    position: relative;
+    inset: auto;
+    flex: 1;
+    min-height: 0;
+  }
+
+  .topFade { height: 12px; }
+
+  .statsContainer {
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
+    align-items: baseline;
+    column-gap: 1rem;
+    row-gap: 0.1rem;
+    bottom: auto; /* top is set by the animation */
+    padding: 0 14px;
+  }
+
+  .statsGroup, .statsGroup dl, .statItem { display: contents; }
+  /* the sides are told apart by their colours, and by the scene above them */
+  .statItem.minor, .era, .hub dt { display: none; }
+
+  .spawned > * { grid-row: 1; }
+  .waiting > * { grid-row: 2; }
+
+  /* the divider fades in over the idle tools, reaching full strength at the top row of the cloud (--cloud-top,
+     set by the animation), and fades out under the sources */
+  .wiper {
+    --line: rgba(0, 0, 0, 0.2);
+    background: linear-gradient(to bottom, transparent calc(var(--cloud-top, 0px) - 80px),
+      var(--line) var(--cloud-top, 0px), var(--line) 75%, transparent);
+  }
+  [data-theme='dark'] .wiper { --line: rgba(255, 255, 255, 0.3); }
+
+  .statItem dd { font-size: 1.1rem; white-space: nowrap; }
+  .chaos dd { grid-column: 1; text-align: right; }
+  .hub dd { grid-column: 3; text-align: left; }
+
+  .chaos dt {
+    grid-column: 2;
+    justify-self: center;
+    font-size: 0.75rem;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+}
+
+/* the narrowest phones say each label in a word */
+@media (max-width: 400px) {
+  .long { display: none; }
+}

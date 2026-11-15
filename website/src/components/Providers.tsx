@@ -25,14 +25,12 @@ export default function Providers(): JSX.Element {
   const [ref, isVisible] = useIntersectionObserver(0.1);
 
   return (
-    <section className={styles.section}>
+    <section className={`${styles.section} page`}>
       <div
         className={`${styles.container} ${isVisible ? styles.visible : ''}`}
         ref={ref as React.RefObject<HTMLDivElement>}
       >
-        <div className={styles.label}>Built-in</div>
         <h2 className={styles.heading}>16 built-in providers</h2>
-        <p className={styles.subheading}>Plus template-backed namespaces (aws, gcloud, kubecontext, talos, conda, op) and a script backend for anything else</p>
         <div className={styles.grid}>
           <div
             className={`${styles.card} ${styles.cardFeatured}`}
