@@ -198,3 +198,71 @@
   color: var(--ifm-color-emphasis-300);
   font-size: 0.7rem;
 }
+
+/* the lead and arrow that end a phone's hero */
+.foot { display: none; }
+
+/* Below 1100px the scene fills the screen and the title centres in the space above its top row of tools,
+   over the idle ones (--cloud-top, set by the animation; see HeroAnimation.module.css). */
+@media (max-width: 1100px) {
+  .hero {
+    display: flex;
+    flex-direction: column;
+    height: calc(100svh - var(--ifm-navbar-height));
+    min-height: 560px;
+  }
+
+  .titleSpace { height: var(--cloud-top, 200px); }
+
+  .header {
+    padding: 0.75rem 1.25rem;
+    max-width: calc(100% - 1rem);
+    box-shadow: 0 0 40px 32px var(--ifm-background-color);
+  }
+}
+
+/* Where the navbar is only a menu button, it waits off screen until the hero has gone (custom.css), and the
+   hero takes the whole screen. */
+@media (max-width: 996px) {
+  .hero { height: 100svh; }
+}
+
+/* A phone's hero is the title, the scene, then the copy and an arrow on to the page. The badges, registries
+   and buttons are a menu away. */
+@media (max-width: 760px) {
+  .metrics, .registryLinks, .ctas, .tagline { display: none; }
+  .title { margin-bottom: 0; font-size: clamp(2rem, 11vw, 3rem); }
+
+  .foot {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0 1.5rem max(1rem, env(safe-area-inset-bottom));
+    text-align: center;
+  }
+
+  .lead {
+    font-size: 0.875rem;
+    line-height: 1.5;
+    color: var(--ifm-font-color-secondary);
+    margin: 0;
+    max-width: 22rem;
+  }
+
+  .next {
+    color: var(--ifm-color-primary);
+    line-height: 0;
+    padding: 0 1rem;
+    animation: nudge 1.8s ease-in-out infinite;
+  }
+}
+
+@keyframes nudge {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(6px); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .next { animation: none; }
+}

@@ -82,6 +82,7 @@
   display: flex;
   gap: 0;
   flex: 1;
+  min-width: 0; /* lets it scroll instead of widening the page */
   overflow-x: auto;
 }
 

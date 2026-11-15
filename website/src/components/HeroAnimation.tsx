@@ -13,15 +13,27 @@ const CONSUMERS = [
   {label: 'nvim', rx: 0.28, up: 95},
   {label: 'zsh', rx: 0.355, up: 0},
   {label: 'fish', rx: 0.38, up: 175},
-  {label: 'claude', rx: 0.46, up: 80},
+  {label: 'codex', rx: 0.46, up: 80},
   {label: 'tmux', rx: 0.53, up: 215},
-  {label: 'codex', rx: 0.585, up: 10},
+  {label: 'claude', rx: 0.585, up: 10},
   {label: 'scanline', rx: 0.63, up: 135},
   {label: 'nvim', rx: 0.71, up: 55},
   {label: 'zsh', rx: 0.775, up: 190},
   {label: 'bash', rx: 0.83, up: 100},
   {label: 'tmux', rx: 0.91, up: 30},
   {label: 'fish', rx: 0.93, up: 170},
+];
+
+// A short scene's cloud (below 1100px): fewer tools, in three rows, so they stay apart when it is shrunk to fit.
+const SMALL_CONSUMERS = [
+  {label: 'zsh', rx: 0.14, up: 160},
+  {label: 'tmux', rx: 0.5, up: 165},
+  {label: 'codex', rx: 0.86, up: 155},
+  {label: 'nvim', rx: 0.31, up: 80},
+  {label: 'scanline', rx: 0.69, up: 85},
+  {label: 'bash', rx: 0.13, up: 0},
+  {label: 'claude', rx: 0.5, up: 5},
+  {label: 'fish', rx: 0.87, up: 0},
 ];
 
 // down: how far above the bottom of the hero a source sits
@@ -118,7 +130,6 @@ export default function HeroAnimation(): JSX.Element {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const wiperRef = useRef<HTMLDivElement>(null);
   const statRefs = useRef<(HTMLElement | null)[]>([]);
-  const barRefs = useRef<(HTMLElement | null)[]>([]);
 
   useEffect(() => {
     const canvas = canvasRef.current!;
@@ -131,15 +142,22 @@ export default function HeroAnimation(): JSX.Element {
     let split = 0.8, dragging = false, swept = false;
     const t0 = performance.now();
 
+    // Below 1100px the scene is short, so it takes the smaller cast. shortcut: chosen once, on load; rotating
+    // across 1100px keeps it until a reload.
+    const small = window.matchMedia('(max-width: 1100px)').matches;
+
     // Per-node state. Times are in seconds since t0.
-    const consumers = CONSUMERS.map((c, i) => ({
+    const consumers = (small ? SMALL_CONSUMERS : CONSUMERS).map((c, i) => ({
       ...c, x: 0, y: 0,
       next: 0.4 + i * 0.11,
       chaos: {pending: 0, flash: -9},
       hub: {flash: -9},
     }));
+    // the smaller cast stands closer to comb, and comb closer to the sources
+    const cloud = small ? 260 : CLOUD, combDown = small ? 175 : COMB.down;
     const sources = SOURCES.map((s, i) => ({
-      ...s, x: 0, y: 0, heat: 0,
+      // the smaller cast spreads the sources across the width, so their labels do not touch
+      ...s, rx: small ? 0.5 + (s.rx - 0.5) * 1.6 : s.rx, x: 0, y: 0, heat: 0,
       // without comb: every request starts its own run of the command, all at once
       jobs: [] as {li: number; start: number; shown: boolean}[],
       // with comb: only comb runs it
@@ -175,23 +193,28 @@ export default function HeroAnimation(): JSX.Element {
       // base height, keeping a gap of GAP under the title; whatever is left goes above the cloud, where the
       // title centres and the idle tools fill in. As the hero gets shorter that space closes, the scene shrinks
       // to its base height, and then the title overlaps the top of the cloud.
+      //
+      // When narrow, see fit(): the title, the scene and the counters stand one above another, `gap` apart.
       const GAP = 120;
-      const below = H - TITLE - SCENE - STATS >= 0;
-      const B = H - (below ? STATS : 0);
-      const k = Math.min(1.8, Math.max(1, (B - TITLE - GAP) / SCENE));
-      const stats = container.querySelector<HTMLElement>(`.${styles.statsContainer}`);
+      const below = !narrow && H - TITLE - SCENE - STATS >= 0;
+      const k = narrow ? squash : Math.min(1.8, Math.max(1, (H - (below ? STATS : 0) - TITLE - GAP) / SCENE));
+      // when narrow, the scene's top (its top row of tools' top edge) is a gap under the title
+      const top = (2 * gap + titleH) / view;
+      const B = narrow ? top + CHIP + highest * k : H - (below ? STATS : 0);
       if (stats) {
         stats.dataset.mode = below ? 'below' : 'corners';
-        stats.style.top = below ? `${B + 40}px` : '';
+        stats.style.top = below ? `${B + 40}px` : narrow ? `${(B - lowest * k + LABEL) * view + gap}px` : '';
       }
-      consumers.forEach(c => { c.x = c.rx * W; c.y = B - (CLOUD + c.up) * k; });
+      consumers.forEach(c => { c.x = c.rx * W; c.y = B - (cloud + c.up) * k; });
       sources.forEach(s => { s.x = s.rx * W; s.y = B - s.down * k; });
-      comb.x = COMB.rx * W; comb.y = B - COMB.down * k;
-      container.style.setProperty('--comb-y', `${H - comb.y}px`);
-      container.style.setProperty('--cloud-y', `${H - (B - CLOUD * k)}px`);
-      // the title centres in the space above the cloud, and overlaps the cloud once that space is too small
-      cloudTop = B - (CLOUD + BAND) * k - 20;
-      container.parentElement?.style.setProperty('--cloud-top', `${Math.max(0, cloudTop)}px`);
+      comb.x = COMB.rx * W; comb.y = B - combDown * k;
+      container.style.setProperty('--comb-y', `${(H - comb.y) * view}px`);
+      container.style.setProperty('--cloud-y', `${(H - (B - cloud * k)) * view}px`);
+      // The idle tools repeat the cloud a band at a time above it. The title centres in the space above the
+      // cloud (when narrow, above the top row of tools), and overlaps the cloud once that space is too small.
+      ghostBase = B - (cloud + BAND) * k;
+      cloudTop = narrow ? top : ghostBase - 20;
+      container.parentElement?.style.setProperty('--cloud-top', `${Math.max(0, cloudTop) * view}px`);
       scale = k;
       ghostLayers.clear();
       chaosCurves = links.map(({ci, si}, i) =>
@@ -200,7 +223,7 @@ export default function HeroAnimation(): JSX.Element {
       hubDown = sources.map(s => curve(comb, s, (s.x < comb.x ? 1 : -1) * 0.05));
     }
 
-    let cloudTop = 0, scale = 1;
+    let cloudTop = 0, ghostBase = 0, scale = 1;
 
     // Idle tools above the cloud: its pattern repeated upwards, fading out towards the top of the hero.
     // Drawn once per size, theme and side.
@@ -218,8 +241,8 @@ export default function HeroAnimation(): JSX.Element {
         for (let band = 1; ; band++) {
           const shift = (band % 2 ? 0.035 : -0.02) * band;
           let any = false;
-          CONSUMERS.forEach((c, i) => {
-            const y = cloudTop + 20 - (BAND * band - (BAND - c.up)) * scale;
+          consumers.forEach((c, i) => {
+            const y = ghostBase - (BAND * (band - 1) + c.up) * scale;
             if (y < -20) return;
             any = true;
             const x = (((c.rx + shift) % 1) + 1) % 1 * W;
@@ -238,20 +261,48 @@ export default function HeroAnimation(): JSX.Element {
     const dotLayers = new Map<string, HTMLCanvasElement>();
     const litLayers = new Map<string, HTMLCanvasElement>();
 
+    // Below 1100px (narrow) the hero is one column with one rhythm: a gap, the title, a gap, the scene from its
+    // top row of tools to its sources' labels, a gap, the counters, a gap. The scene keeps its proportions and is
+    // scaled as a whole by `view` to fit, no wider than DESIGN pixels across the screen; the gaps share what is
+    // left, at least MIN_GAP each. Only when that would shrink it below MIN_VIEW (0.8 above 760px, where the
+    // title block is taller) does it flatten instead (squash, down to 0.5). W and H are in scene pixels.
+    const narrowQuery = window.matchMedia('(max-width: 1100px)');
+    const DESIGN = 520, MIN_VIEW = 0.6, MIN_GAP = 16;
+    // a tool's half height; how far under a source its label's second line ends, at any scale
+    const CHIP = 17, LABEL = 72;
+    const lowest = Math.min(...sources.map(s => s.down));
+    const highest = cloud + Math.max(...consumers.map(c => c.up));
+    const stats = container.querySelector<HTMLElement>(`.${styles.statsContainer}`);
+    const header = container.parentElement?.querySelector<HTMLElement>('h1')?.parentElement;
+    let narrow = false, view = 1, squash = 1, gap = 0, titleH = 0;
+
+    function fit(width: number, h: number) {
+      titleH = header?.offsetHeight ?? 0;
+      const fixed = titleH + (stats?.offsetHeight ?? 0);
+      const span = highest - lowest;
+      const room = h - fixed - 4 * MIN_GAP;
+      view = Math.max(width > 760 ? 0.8 : MIN_VIEW, Math.min(1, width / DESIGN, room / (span + CHIP + LABEL)));
+      squash = Math.max(0.5, Math.min(1, (room / view - CHIP - LABEL) / span));
+      gap = Math.max(8, (h - fixed - (span * squash + CHIP + LABEL) * view) / 4);
+    }
+
     function resize() {
       const r = container.getBoundingClientRect();
       const dpr = Math.min(window.devicePixelRatio || 1, 2);
-      W = r.width; H = r.height;
-      canvas.width = W * dpr; canvas.height = H * dpr;
-      canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      narrow = narrowQuery.matches;
+      const h = r.height;
+      if (narrow) fit(r.width, h); else view = 1;
+      W = r.width / view; H = h / view;
+      canvas.width = r.width * dpr; canvas.height = h * dpr;
+      canvas.style.width = r.width + 'px'; canvas.style.height = h + 'px';
+      ctx.setTransform(dpr * view, 0, 0, dpr * view, 0, 0);
       dotLayers.clear(); litLayers.clear();
       layout();
     }
 
-    const near = (x: number) => Math.abs(x - container.getBoundingClientRect().left - split * W) < 36;
+    const near = (x: number) => Math.abs(x - container.getBoundingClientRect().left - split * W * view) < 36;
     const move = (x: number) => {
-      split = Math.max(0.06, Math.min(0.94, (x - container.getBoundingClientRect().left) / W));
+      split = Math.max(0.06, Math.min(0.94, (x - container.getBoundingClientRect().left) / (W * view)));
       swept = true;
     };
     const onDown = (e: MouseEvent) => { if (near(e.clientX)) dragging = true; };
@@ -609,7 +660,7 @@ export default function HeroAnimation(): JSX.Element {
         if (p >= 1) swept = true;
       }
       const sx = split * W;
-      if (wiperRef.current) wiperRef.current.style.left = sx + 'px';
+      if (wiperRef.current) wiperRef.current.style.left = sx * view + 'px';
 
       schedule(t);
       for (const list of [chaosComets, hubComets]) {
@@ -667,11 +718,8 @@ export default function HeroAnimation(): JSX.Element {
 
       // time the tools spent waiting for answers, at the real per-answer cost on each side
       const lw = count.la * LEFT_MS / 1000, rw = count.ra * RIGHT_MS / 1000;
-      const v = [count.la, count.lc, count.ra, count.rc, `${lw.toFixed(3)} s`, `${rw.toFixed(3)} s`];
+      const v = [count.la, count.lc, count.ra, count.rc, lw.toFixed(3), rw.toFixed(3)];
       statRefs.current.forEach((el, n) => { if (el && el.textContent !== String(v[n])) el.textContent = String(v[n]); });
-      // the bars share one scale: the longer wait fills its bar
-      const most = Math.max(lw, rw, 1e-9);
-      barRefs.current.forEach((el, n) => { if (el) el.style.width = `max(2px, ${(100 * [lw, rw][n] / most).toFixed(3)}%)`; });
 
       if (onScreen) raf = requestAnimationFrame(frame);
     }
@@ -702,26 +750,20 @@ export default function HeroAnimation(): JSX.Element {
         </div>
       </div>
       <div className={styles.statsContainer}>
-        <div className={`${styles.statsGroup} ${styles.chaos}`}>
-          <h2 className={styles.era}><abbr title="Before Comb">BC</abbr><span>Before Comb</span></h2>
-          <dl>
-            <div className={styles.statItem}><dt>answers</dt><dd ref={el => { statRefs.current[0] = el; }}>0</dd></div>
-            <div className={styles.statItem}><dt>processes spawned</dt><dd ref={el => { statRefs.current[1] = el; }}>0</dd></div>
-            <div className={styles.statItem}><dt>each answer</dt><dd>30.900 ms</dd></div>
-            <div className={styles.statItem}><dt>spent waiting</dt><dd ref={el => { statRefs.current[4] = el; }}>0.000 s</dd></div>
-          </dl>
-          <div className={styles.bar} aria-hidden="true"><span ref={el => { barRefs.current[0] = el; }} /></div>
-        </div>
-        <div className={`${styles.statsGroup} ${styles.hub}`}>
-          <h2 className={styles.era}><abbr title="After Daemon">AD</abbr><span>After Daemon</span></h2>
-          <dl>
-            <div className={styles.statItem}><dt>answers</dt><dd ref={el => { statRefs.current[2] = el; }}>0</dd></div>
-            <div className={styles.statItem}><dt>processes spawned</dt><dd ref={el => { statRefs.current[3] = el; }}>0</dd></div>
-            <div className={styles.statItem}><dt>each answer</dt><dd>0.015 ms</dd></div>
-            <div className={styles.statItem}><dt>spent waiting</dt><dd ref={el => { statRefs.current[5] = el; }}>0.000 s</dd></div>
-          </dl>
-          <div className={styles.bar} aria-hidden="true"><span ref={el => { barRefs.current[1] = el; }} /></div>
-        </div>
+        {([
+          ['chaos', 'BC', 'Before Comb', 0, '30.900'],
+          ['hub', 'AD', 'After Daemon', 2, '0.015'],
+        ] as const).map(([side, abbr, name, n, each]) => (
+          <div key={side} className={`${styles.statsGroup} ${styles[side]}`}>
+            <h2 className={styles.era}><abbr title={name}>{abbr}</abbr><span>{name}</span></h2>
+            <dl>
+              <div className={`${styles.statItem} ${styles.minor}`}><dt>answers</dt><dd ref={el => { statRefs.current[n] = el; }}>0</dd></div>
+              <div className={`${styles.statItem} ${styles.spawned}`}><dt>processes<span className={styles.long}> spawned</span></dt><dd ref={el => { statRefs.current[n + 1] = el; }}>0</dd></div>
+              <div className={`${styles.statItem} ${styles.minor}`}><dt>each answer</dt><dd>{each}<span className={styles.unit}>ms</span></dd></div>
+              <div className={`${styles.statItem} ${styles.waiting}`}><dt><span className={styles.long}>spent </span>waiting</dt><dd><span ref={el => { statRefs.current[4 + n / 2] = el; }}>0.000</span><span className={styles.unit}>s</span></dd></div>
+            </dl>
+          </div>
+        ))}
       </div>
     </div>
   );
