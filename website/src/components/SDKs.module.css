@@ -23,17 +23,6 @@
   transform: translateY(0);
 }
 
-.label {
-  font-family: var(--ifm-heading-font-family);
-  font-size: 0.7rem;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.15em;
-  color: var(--ifm-color-primary);
-  margin-bottom: 0.75rem;
-  text-align: center;
-}
-
 .heading {
   font-family: var(--ifm-heading-font-family);
   font-size: clamp(1.75rem, 4vw, 2.5rem);
@@ -166,6 +155,10 @@
 }
 
 .terminalBody {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
   background: #0d1117;
   padding: 1.75rem 1.75rem;
   font-family: var(--ifm-font-family-monospace);
@@ -194,40 +187,57 @@
   justify-content: center;
 }
 
-.link {
+.copy {
+  flex-shrink: 0;
+  display: inline-flex;
+  padding: 0.35rem;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 6px;
+  background: transparent;
+  color: #c9d1d9;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s;
+}
+
+.copy:hover {
+  border-color: #06d6f0;
+  color: #06d6f0;
+}
+
+.copy svg {
+  width: 18px;
+  height: 18px;
+}
+
+/* the one way on from here */
+.quickStart {
   display: inline-flex;
   align-items: center;
-  padding: 0.5rem 1.25rem;
-  border-radius: 9999px;
-  font-size: 0.875rem;
+  padding: 0.7rem 1.75rem;
+  border-radius: 8px;
+  font-size: 1rem;
   font-weight: 600;
-  color: var(--ifm-font-color-base);
+  color: #ffffff;
+  background: var(--ifm-color-primary);
   text-decoration: none;
-  background: var(--ifm-background-color);
-  border: 1px solid var(--ifm-color-emphasis-200);
-  transition: border-color 0.15s ease, color 0.15s ease, background 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease;
+  transition: background 0.2s, transform 0.15s;
 }
 
-.link:hover {
-  background: #0891b2;
-  color: white;
-  border-color: #0891b2;
-  transform: translateY(-2px);
-  box-shadow: 0 4px 12px rgba(8, 145, 178, 0.4);
+.quickStart:hover {
+  color: #ffffff;
+  background: var(--ifm-color-primary-dark);
+  transform: translateY(-1px);
   text-decoration: none;
 }
 
-[data-theme='dark'] .link {
-  color: #e8dfc8;
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(255, 255, 255, 0.1);
+[data-theme='dark'] .quickStart,
+[data-theme='dark'] .quickStart:hover {
+  color: #0d1117;
 }
 
-[data-theme='dark'] .link:hover {
-  background: #06d6f0;
-  color: #080c11;
-  border-color: #06d6f0;
-  box-shadow: 0 4px 12px rgba(6, 214, 240, 0.3);
+@media (max-width: 760px) {
+  .section { padding: 2rem 1.25rem; }
+  .terminalBody { padding: 1rem; }
 }
 
 /* Page footer — light section with link columns */

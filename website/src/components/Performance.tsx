@@ -2,102 +2,71 @@ import {useEffect, useRef, useState} from 'react';
 import {useIntersectionObserver} from '../hooks/useIntersectionObserver';
 import styles from './Performance.module.css';
 
+// The chart plays each read out at SLOW times its real length: the bars all grow at one speed, so each takes
+// as long to fill as its read takes, and the longest fills the row.
+const SLOW = 100;
 const chartData = [
-  {
-    label: 'gitstatus daemon',
-    value: '30.9ms',
-    width: '100%',
-    barStyle: styles.chartBarSlow,
-  },
-  {
-    label: 'raw git status',
-    value: '5.6ms',
-    width: '18.1%',
-    barStyle: styles.chartBarMedium,
-  },
-  {
-    label: 'beachcomber',
-    value: '36µs',
-    width: '100%',
-    minWidth: '4px',
-    barStyle: styles.chartBarFast,
-    isSliver: true,
-  },
+  {label: 'gitstatus daemon', value: '30.9ms', ms: 30.9, barStyle: styles.chartBarSlow},
+  {label: 'raw git status', value: '5.6ms', ms: 5.6, barStyle: styles.chartBarMedium},
+  {label: 'beachcomber', value: '36µs', ms: 0.036, barStyle: styles.chartBarFast},
 ];
+const longest = Math.max(...chartData.map(r => r.ms));
 
 const beforeStats = [
-  {stat: '960 threads', desc: '30 shells running gitstatusd, all computing the same answer'},
-  {stat: '500 forks / 10s', desc: 'tmux status bars forking processes to collect battery, hostname, and git data'},
-  {stat: '2.5s CPU', desc: 'wasted every minute on duplicate environment queries across tools'},
+  {stat: '960 threads', desc: '30 shells, each running gitstatusd'},
+  {stat: '500 forks / 10s', desc: 'tmux status bars reading battery, host and git'},
+  {stat: '2.5s CPU', desc: 'wasted a minute on duplicate queries'},
 ];
 
 const afterStats = [
-  {stat: '1 daemon', desc: 'one beachcomber process serves every shell, editor, and status bar on the machine'},
-  {stat: '36µs reads', desc: 'a cached value on a kept-open session, client to daemon and back (Apple M2 Max MacBook Pro)'},
-  {stat: '45k req/sec', desc: 'sustained throughput on a single socket with zero coordination overhead'},
+  {stat: '1 daemon', desc: 'serving every shell, editor and status bar'},
+  {stat: '36µs reads', desc: 'client to daemon and back, on an M2 Max'},
+  {stat: '45k req/s', desc: 'sustained, on a single socket'},
 ];
 
+// The chart plays whenever it is scrolled down to, and stays filled when it is scrolled back up to: it empties
+// only once it is wholly below the screen again, ready to play for the next reader coming down.
 function BarChart(): JSX.Element {
-  const [ref, isVisible] = useIntersectionObserver(0.3);
+  const ref = useRef<HTMLElement>(null);
+  const [isVisible, setVisible] = useState(false);
+  useEffect(() => {
+    const seen = new IntersectionObserver(([e]) => {
+      if (e.isIntersecting && e.intersectionRatio >= 0.5) setVisible(true);
+      else if (!e.isIntersecting && e.boundingClientRect.top > 0) setVisible(false);
+    }, {threshold: [0, 0.5]});
+    seen.observe(ref.current!);
+    return () => seen.disconnect();
+  }, []);
 
   return (
-    <div className={styles.chart} ref={ref as React.RefObject<HTMLDivElement>}>
-      {chartData.map((row) => (
-        <div key={row.label} className={styles.chartRow}>
-          <span className={styles.chartLabel}>{row.label}</span>
-          <div className={styles.chartBarContainer}>
-            {row.isSliver ? (
+    <figure className={styles.chart} ref={ref}>
+      {chartData.map((row) => {
+        const seconds = (row.ms * SLOW) / 1000;
+        return (
+          <div key={row.label} className={styles.chartRow}>
+            <span className={styles.chartLabel}>{row.label}</span>
+            <div className={styles.chartBarContainer}>
               <div
                 className={`${styles.chartBar} ${row.barStyle}`}
                 style={{
-                  width: isVisible ? '4px' : '0',
-                  minWidth: isVisible ? '4px' : '0',
-                  transition: 'width 1.2s cubic-bezier(0.25, 0.46, 0.45, 0.94) 0.6s',
+                  // the row keeps room after the bar for its value
+                  width: isVisible ? `calc((100% - 4.5rem) * ${row.ms / longest})` : 0,
+                  // empties at once, fills at the read's own pace
+                  transitionDuration: isVisible ? `${seconds}s` : '0s',
                 }}
+              />
+              <span
+                className={styles.chartValue}
+                style={{opacity: isVisible ? 1 : 0, transitionDelay: isVisible ? `${seconds}s` : '0s'}}
               >
-                <span className={styles.chartValueOutside}>{row.value}</span>
-              </div>
-            ) : (
-              <div
-                className={`${styles.chartBar} ${row.barStyle}`}
-                style={{width: isVisible ? row.width : '0'}}
-              >
-                <span className={styles.chartValue}>{row.value}</span>
-              </div>
-            )}
+                {row.value}
+              </span>
+            </div>
           </div>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function CountUp({target, duration}: {target: number; duration: number}): JSX.Element {
-  const [count, setCount] = useState(0);
-  const [ref, isVisible] = useIntersectionObserver(0.3);
-  const hasStarted = useRef(false);
-
-  useEffect(() => {
-    if (!isVisible || hasStarted.current) return;
-    hasStarted.current = true;
-
-    const startTime = performance.now();
-    const step = (now: number) => {
-      const elapsed = now - startTime;
-      const progress = Math.min(elapsed / duration, 1);
-      const eased = 1 - Math.pow(1 - progress, 3);
-      setCount(Math.round(eased * target));
-      if (progress < 1) {
-        requestAnimationFrame(step);
-      }
-    };
-    requestAnimationFrame(step);
-  }, [isVisible, target, duration]);
-
-  return (
-    <span ref={ref as React.RefObject<HTMLSpanElement>}>
-      {count.toLocaleString()}
-    </span>
+        );
+      })}
+      <figcaption className={styles.chartCaption}>One read each, slowed down {SLOW}×</figcaption>
+    </figure>
   );
 }
 
@@ -105,49 +74,30 @@ export default function Performance(): JSX.Element {
   const [sectionRef, sectionVisible] = useIntersectionObserver(0.1);
 
   return (
-    <section className={styles.section}>
+    <section className={`${styles.section} page`}>
       <div
         className={`${styles.container} ${sectionVisible ? styles.visible : ''}`}
         ref={sectionRef as React.RefObject<HTMLDivElement>}
       >
-        <div className={styles.label}>Performance</div>
-        <h2 className={styles.heading}>The speed difference is absurd</h2>
+        <h2 className={styles.heading}>Obsessive about speed</h2>
 
         <BarChart />
 
         <div className={styles.comparison}>
-          <div className={`${styles.comparisonPanel} ${styles.comparisonPanelBad}`}>
-            <div className={styles.comparisonTitle}>Without beachcomber</div>
-            {beforeStats.map((item) => (
-              <div key={item.stat} className={styles.comparisonItem}>
-                <div className={`${styles.comparisonStat} ${styles.comparisonStatBad}`}>
-                  {item.stat}
+          {[
+            ['Without beachcomber', beforeStats, styles.comparisonPanelBad, styles.comparisonStatBad],
+            ['With beachcomber', afterStats, styles.comparisonPanelGood, styles.comparisonStatGood],
+          ].map(([title, stats, panel, stat]) => (
+            <div key={title as string} className={`${styles.comparisonPanel} ${panel}`}>
+              <div className={styles.comparisonTitle}>{title as string}</div>
+              {(stats as typeof beforeStats).map((item) => (
+                <div key={item.stat} className={styles.comparisonItem}>
+                  <div className={`${styles.comparisonStat} ${stat}`}>{item.stat}</div>
+                  <div className={styles.comparisonDesc}>{item.desc}</div>
                 </div>
-                <div className={styles.comparisonDesc}>{item.desc}</div>
-              </div>
-            ))}
-          </div>
-
-          <div className={`${styles.comparisonPanel} ${styles.comparisonPanelGood}`}>
-            <div className={styles.comparisonTitle}>With beachcomber</div>
-            {afterStats.map((item) => (
-              <div key={item.stat} className={styles.comparisonItem}>
-                <div className={`${styles.comparisonStat} ${styles.comparisonStatGood}`}>
-                  {item.stat}
-                </div>
-                <div className={styles.comparisonDesc}>{item.desc}</div>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        <div className={styles.callout}>
-          <div className={styles.calloutNumber}>
-            <CountUp target={2060} duration={1500} />
-          </div>
-          <p className={styles.calloutText}>
-            queries served by beachcomber in the time it takes gitstatus to return one result
-          </p>
+              ))}
+            </div>
+          ))}
         </div>
       </div>
     </section>

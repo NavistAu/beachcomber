@@ -12,8 +12,10 @@ if (ExecutionEnvironment.canUseDOM) {
   // waits until the hero has scrolled away.
   function updateBrand() {
     const hero = isLandingPage() ? document.getElementById('hero') : null;
-    // the page starts with the hero in view (custom.css keys on #hero), so only its leaving is marked
-    document.documentElement.classList.toggle('hero-gone', !!hero && hero.getBoundingClientRect().bottom <= 0);
+    // the page starts with the hero in view (custom.css keys on #hero), so only its leaving is marked: once
+    // no more of it shows than the navbar would cover
+    const bar = document.querySelector<HTMLElement>('.navbar')?.offsetHeight ?? 0;
+    document.documentElement.classList.toggle('hero-gone', !!hero && hero.getBoundingClientRect().bottom <= bar + 1);
   }
 
   function updateFooter() {

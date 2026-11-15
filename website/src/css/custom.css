@@ -374,3 +374,43 @@ html:has(#hero):not(.hero-gone) .navbar__inner .navbar__brand {
     pointer-events: none;
   }
 }
+
+/* The home page reads a page at a time: the hero and each section after it fill the screen, and a scroll
+   settles on the next one rather than anywhere between. A section taller than the screen scrolls within. */
+html:has(#hero) {
+  scroll-snap-type: y mandatory;
+  scroll-padding-top: var(--ifm-navbar-height);
+}
+
+#hero {
+  scroll-snap-align: start;
+}
+
+html:has(#hero) .page {
+  scroll-snap-align: start;
+  min-height: calc(100svh - var(--ifm-navbar-height));
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+/* a page's content takes the page's width, however wide its code is */
+html:has(#hero) .page > * {
+  width: 100%;
+  min-width: 0;
+}
+
+html:has(#hero) .footer {
+  scroll-snap-align: end;
+}
+
+/* Where the navbar floats in once the hero has gone, a page settles at the very top and keeps the navbar's
+   height clear at its own top instead. */
+@media (max-width: 996px) {
+  html:has(#hero) { scroll-padding-top: 0; }
+
+  html:has(#hero) .page {
+    min-height: 100svh;
+    padding-top: calc(var(--ifm-navbar-height) + 1rem) !important;
+  }
+}

@@ -1,4 +1,4 @@
-import {useState} from 'react';
+import {useEffect, useState} from 'react';
 import {useIntersectionObserver} from '../hooks/useIntersectionObserver';
 import styles from './HowItWorks.module.css';
 
@@ -134,13 +134,26 @@ const styleMap: Record<string, string> = {
   comment: styles.codeComment,
 };
 
-function TerminalLine({line}: {line: TabLine}) {
+// The CLI tab plays like a recording: each command is typed a character a tick, and its output appears a
+// pause after. A line starts at the tick the one before it ends.
+const TICK = 45, PAUSE = 12;
+function starts(lines: TabLine[]): number[] {
+  let t = 8;
+  return lines.map(line => {
+    const at = t;
+    t += line.type === 'cmd' ? (line.text?.length ?? 0) + PAUSE : line.type === 'out' ? PAUSE : 0;
+    return at;
+  });
+}
+
+function TerminalLine({line, typed}: {line: TabLine; typed?: number}) {
   switch (line.type) {
     case 'cmd':
       return (
         <div className={styles.terminalLine}>
           <span className={styles.prompt}>{line.prompt}</span>
-          <span className={styles.command}>{line.text}</span>
+          <span className={styles.command}>{typed === undefined ? line.text : line.text?.slice(0, typed)}</span>
+          {typed !== undefined && typed <= (line.text?.length ?? 0) + PAUSE && <span className={styles.cursor} />}
         </div>
       );
     case 'out':
@@ -174,21 +187,32 @@ function TerminalLine({line}: {line: TabLine}) {
 export default function HowItWorks(): JSX.Element {
   const [ref, isVisible] = useIntersectionObserver(0.1);
   const [activeTab, setActiveTab] = useState('cli');
+  const [tick, setTick] = useState(0);
 
   const activeContent = tabs.find(t => t.id === activeTab);
+  const playing = activeTab === 'cli';
+  const at = playing ? starts(activeContent!.lines) : [];
+  const end = at.length ? at[at.length - 1] + PAUSE : 0;
+
+  // the recording starts when the section comes into view, and again whenever its tab is chosen
+  useEffect(() => {
+    if (!isVisible || !playing) return;
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) { setTick(end); return; }
+    setTick(0);
+    const id = window.setInterval(() => setTick(t => (t >= end ? (window.clearInterval(id), t) : t + 1)), TICK);
+    return () => window.clearInterval(id);
+  }, [isVisible, playing, end]);
 
   return (
-    <section className={styles.section}>
+    <section className={`${styles.section} page`}>
       <div
         className={`${styles.container} ${isVisible ? styles.visible : ''}`}
         ref={ref as React.RefObject<HTMLDivElement>}
       >
-        <div className={styles.label}>How it works</div>
         <h2 className={styles.heading}>How it works</h2>
         <p className={styles.description}>
-          beachcomber is a single async daemon. It watches directories using native OS APIs, runs
-          providers when files change or timers fire, and caches results in a shared in-memory map.
-          Every consumer reads from the same cache via a Unix socket.
+          One daemon watches your directories and runs each provider when its files change or its timer
+          fires, keeping the answers in memory. Every tool reads them over a Unix socket.
         </p>
 
         <div className={styles.terminalWrapper}>
@@ -211,9 +235,13 @@ export default function HowItWorks(): JSX.Element {
             </div>
           </div>
           <div className={styles.terminalBody}>
-            {activeContent?.lines.map((line, i) => (
-              <TerminalLine key={`${activeTab}-${i}`} line={line} />
-            ))}
+            {activeContent?.lines.map((line, i) =>
+              !playing ? <TerminalLine key={`${activeTab}-${i}`} line={line} />
+                // lines not yet played keep their room, so the terminal does not grow as it plays
+                : tick >= at[i]
+                  ? <TerminalLine key={`${activeTab}-${i}`} line={line} typed={line.type === 'cmd' ? tick - at[i] : undefined} />
+                  : <div key={`${activeTab}-${i}`} style={{visibility: 'hidden'}}><TerminalLine line={line} /></div>
+                )}
           </div>
         </div>
       </div>
